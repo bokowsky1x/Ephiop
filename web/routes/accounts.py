@@ -4,6 +4,34 @@ from models import db, Account
 accounts_bp = Blueprint('accounts', __name__)
 
 
+@accounts_bp.route('/import-tdata', methods=['POST'])
+def import_desktop():
+    from tdata_import import import_tdata
+    upload = request.files.get('tdata')
+    manager = current_app.telegram_manager
+    if not upload or not upload.filename:
+        flash('Выберите ZIP-архив tdata', 'danger')
+        return redirect(url_for('accounts.index'))
+    if manager is None or manager.loop is None:
+        flash('Telegram ещё не запущен', 'danger')
+        return redirect(url_for('accounts.index'))
+    future = None
+    try:
+        future = manager.submit(import_tdata(
+            current_app._get_current_object(), upload.read(),
+            request.form.get('passcode', ''), request.form.get('name', '').strip(),
+        ))
+        count, skipped = future.result(timeout=100)
+        flash(f'Импортировано аккаунтов: {count}. Уже добавлены: {skipped}.', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'danger')
+    except Exception:
+        if future:
+            future.cancel()
+        flash('Не удалось импортировать tdata. Проверьте архив, локальный пароль и доступ к Telegram.', 'danger')
+    return redirect(url_for('accounts.index'))
+
+
 @accounts_bp.route('/<int:account_id>/dialogs/<group_id>/topics')
 def topics(account_id, group_id):
     """使用 GetForumTopicsRequest 直接获取 Forum 话题列表（含官方标题）"""
@@ -11,7 +39,7 @@ def topics(account_id, group_id):
     account = Account.query.get_or_404(account_id)
 
     if account_id not in manager.connected_accounts:
-        return jsonify({'error': '账号未连接'}), 400
+        return jsonify({'error': 'Аккаунт не подключён'}), 400
 
     async def _get_topics():
         from telethon.tl.functions.messages import GetForumTopicsRequest
@@ -19,7 +47,7 @@ def topics(account_id, group_id):
         try:
             entity = await client.get_entity(int(group_id))
         except Exception as e:
-            return {'error': f'获取群组失败: {e}'}
+            return {'error': f'Не удалось получить группу: {e}'}
 
         if not getattr(entity, 'forum', False):
             return {'topics': [], 'is_forum': False}
@@ -58,7 +86,7 @@ def topics(account_id, group_id):
         # 为 id=1 的话题补充括号说明（如果后端返回的标题较短）
         for t in topics:
             if t['id'] == 1 and '默认' not in t['title'] and '通用' not in t['title']:
-                t['title'] = t['title'] + '（默认话题）'
+                t['title'] = t['title'] + '（Основная тема）'
 
         return {'topics': topics, 'is_forum': True}
 
@@ -77,7 +105,7 @@ def resolve_entity(account_id, target_id):
     account = Account.query.get_or_404(account_id)
 
     if account_id not in manager.connected_accounts:
-        return jsonify({'error': '账号未连接'}), 400
+        return jsonify({'error': 'Аккаунт не подключён'}), 400
 
     async def _resolve():
         client = manager.clients[account_id]
@@ -88,7 +116,7 @@ def resolve_entity(account_id, target_id):
                 eid = target_id
             entity = await client.get_entity(eid)
         except Exception as e:
-            return {'error': f'无法解析: {e}'}
+            return {'error': f'Не удалось определить получателя: {e}'}
 
         etype = type(entity).__name__
         is_forum = getattr(entity, 'forum', False)
@@ -126,7 +154,7 @@ def dialogs(account_id):
     account = Account.query.get_or_404(account_id)
 
     if account_id not in manager.connected_accounts:
-        return jsonify({'error': f'账号 {account.name} 未连接，请先确认已授权且在线'}), 400
+        return jsonify({'error': f'Аккаунт {account.name} не подключён. Войдите в аккаунт'}), 400
 
     async def _get_dialogs():
         client = manager.clients[account_id]
@@ -168,15 +196,15 @@ def add():
     api_hash = request.form.get('api_hash', '').strip()
 
     if not all([name, phone, api_id, api_hash]):
-        flash('所有字段均为必填项', 'danger')
+        flash('Заполните все обязательные поля', 'danger')
         return redirect(url_for('accounts.index'))
 
     if not api_id.isdigit():
-        flash('API ID 必须是数字', 'danger')
+        flash('API ID должен быть числом', 'danger')
         return redirect(url_for('accounts.index'))
 
     if Account.query.filter_by(phone=phone).first():
-        flash(f'手机号 {phone} 已存在', 'warning')
+        flash(f'Номер {phone} уже добавлен', 'warning')
         return redirect(url_for('accounts.index'))
 
     account = Account(
@@ -188,7 +216,7 @@ def add():
     )
     db.session.add(account)
     db.session.commit()
-    flash('账号已添加，请完成登录授权', 'success')
+    flash('Аккаунт добавлен. Завершите вход', 'success')
     return redirect(url_for('accounts.auth', account_id=account.id))
 
 
@@ -204,7 +232,7 @@ def send_code(account_id):
     manager = current_app.telegram_manager
 
     if manager is None:
-        flash('Telegram 管理器未启动', 'danger')
+        flash('Telegram ещё не запущен', 'danger')
         return redirect(url_for('accounts.auth', account_id=account_id))
 
     try:
@@ -212,9 +240,9 @@ def send_code(account_id):
             manager.send_code_request(account.phone, account.api_id, account.api_hash)
         )
         future.result(timeout=30)
-        flash('验证码已发送，请查收短信或 Telegram 应用中的通知', 'success')
+        flash('Код отправлен. Проверьте SMS или уведомления Telegram', 'success')
     except Exception as e:
-        flash(f'发送验证码失败: {e}', 'danger')
+        flash(f'Не удалось отправить код: {e}', 'danger')
 
     return redirect(url_for('accounts.auth', account_id=account_id))
 
@@ -227,7 +255,7 @@ def verify(account_id):
     manager = current_app.telegram_manager
 
     if not code:
-        flash('请输入验证码', 'danger')
+        flash('Введите код подтверждения', 'danger')
         return redirect(url_for('accounts.auth', account_id=account_id))
 
     try:
@@ -235,16 +263,17 @@ def verify(account_id):
         session_string = future.result(timeout=30)
 
         account.session_string = session_string
+        account.session_kind = 'telethon'
         account.status = 'authorized'
         db.session.commit()
 
         # 启动该账号的 Telethon 客户端
         manager.submit(manager.reload_account(account.id))
 
-        flash('授权成功！账号已开始运行', 'success')
+        flash('Вход выполнен. Аккаунт запущен', 'success')
         return redirect(url_for('accounts.index'))
     except Exception as e:
-        flash(f'验证失败: {e}', 'danger')
+        flash(f'Не удалось войти: {e}', 'danger')
         return redirect(url_for('accounts.auth', account_id=account_id))
 
 
@@ -257,10 +286,10 @@ def toggle(account_id):
 
     if account.is_active and account.status == 'authorized':
         manager.submit(manager.reload_account(account.id))
-        flash(f'账号 {account.name} 已启用', 'success')
+        flash(f'Аккаунт {account.name} включён', 'success')
     else:
         manager.submit(manager.disconnect_account(account.id))
-        flash(f'账号 {account.name} 已停用', 'warning')
+        flash(f'Аккаунт {account.name} отключён', 'warning')
 
     return redirect(url_for('accounts.index'))
 
@@ -273,7 +302,7 @@ def delete(account_id):
     manager.submit(manager.disconnect_account(account.id))
     db.session.delete(account)
     db.session.commit()
-    flash(f'账号 {account.name} 已删除', 'success')
+    flash(f'Аккаунт {account.name} удалён', 'success')
     return redirect(url_for('accounts.index'))
 
 
@@ -291,6 +320,6 @@ def schedule(account_id):
     if re.match(r'^\d{2}:\d{2}$', end):
         account.schedule_end = end
     db.session.commit()
-    status = f'{start} \u2013 {end}' if account.schedule_enabled else '全天托管'
-    flash(f'账号 {account.name} 托管时间已设置（{status}）', 'success')
+    status = f'{start} \u2013 {end}' if account.schedule_enabled else 'Круглосуточно'
+    flash(f'Расписание аккаунта {account.name} сохранено ({status})', 'success')
     return redirect(url_for('accounts.index'))

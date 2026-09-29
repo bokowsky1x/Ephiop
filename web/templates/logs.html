@@ -1,25 +1,25 @@
 {% extends 'base.html' %}
-{% block title %}运行日志 - TG Bot{% endblock %}
-{% block page_title %}运行日志{% endblock %}
+{% block title %}Журнал - Ephiop{% endblock %}
+{% block page_title %}Журнал{% endblock %}
 
 {% block content %}
 <div class="row g-4">
 
-  <!-- 待发回复 -->
+  <!-- Ожидающие ответы -->
   {% if pending %}
   <div class="col-12">
     <div class="card border-warning">
       <div class="card-header bg-warning text-dark fw-semibold">
-        <i class="bi bi-hourglass-split me-1"></i>待发定时回复（{{ pending|length }} 条）
+        <i class="bi bi-hourglass-split me-1"></i>Отложенные ответы ({{ pending|length }} записей)
       </div>
       <div class="card-body p-0">
         <table class="table table-sm align-middle mb-0">
           <thead class="table-light">
             <tr>
-              <th>计划发送时间</th>
-              <th>群组</th>
-              <th>消息</th>
-              <th>触发原因</th>
+              <th>Время отправки</th>
+              <th>Группа</th>
+              <th>Сообщение</th>
+              <th>Причина срабатывания</th>
             </tr>
           </thead>
           <tbody>
@@ -44,9 +44,9 @@
       <div class="card-body py-2">
         <form method="get" class="row g-2 align-items-end">
           <div class="col-sm-4">
-            <label class="form-label small mb-1">账号</label>
+            <label class="form-label small mb-1">Аккаунт</label>
             <select name="account_id" class="form-select form-select-sm">
-              <option value="">全部账号</option>
+              <option value="">Все аккаунты</option>
               {% for acc in accounts %}
               <option value="{{ acc.id }}" {{ 'selected' if current_account_id == acc.id }}>
                 {{ acc.name }}
@@ -55,46 +55,46 @@
             </select>
           </div>
           <div class="col-sm-4">
-            <label class="form-label small mb-1">日志类型</label>
+            <label class="form-label small mb-1">Тип события</label>
             <select name="log_type" class="form-select form-select-sm">
-              <option value="">全部类型</option>
+              <option value="">Все типы</option>
               {% for lt in log_types %}
               <option value="{{ lt }}" {{ 'selected' if current_log_type == lt }}>
-                {% if lt == 'keyword_matched' %}关键词匹配
-                {% elif lt == 'auto_replied' %}自动回复
-                {% elif lt == 'scheduled_sent' %}定时发送
-                {% elif lt == 'error' %}错误
+                {% if lt == 'keyword_matched' %}Совпадение ключевых слов
+                {% elif lt == 'auto_replied' %}Автоответ
+                {% elif lt == 'scheduled_sent' %}Отправка по расписанию
+                {% elif lt == 'error' %}Ошибка
                 {% else %}{{ lt }}{% endif %}
               </option>
               {% endfor %}
             </select>
           </div>
           <div class="col-sm-2">
-            <button type="submit" class="btn btn-sm btn-primary w-100">筛选</button>
+            <button type="submit" class="btn btn-sm btn-primary w-100">Фильтр</button>
           </div>
           <div class="col-sm-2">
-            <a href="{{ url_for('logs.index') }}" class="btn btn-sm btn-outline-secondary w-100">重置</a>
+            <a href="{{ url_for('logs.index') }}" class="btn btn-sm btn-outline-secondary w-100">Сбросить</a>
           </div>
         </form>
       </div>
     </div>
   </div>
 
-  <!-- 日志列表 -->
+  <!-- Журнал -->
   <div class="col-12">
     <div class="card">
       <div class="card-header bg-white fw-semibold d-flex align-items-center justify-content-between">
         <span>
-          <i class="bi bi-journal-text me-1"></i>操作记录
-          <span class="badge bg-secondary ms-1">共 {{ logs.total }} 条</span>
+          <i class="bi bi-journal-text me-1"></i>Журнал действий
+          <span class="badge bg-secondary ms-1">Всего {{ logs.total }} записей</span>
         </span>
         <div class="d-flex gap-2">
           <button class="btn btn-sm btn-outline-danger d-none" id="btn-delete-selected" onclick="deleteSelected()">
-            <i class="bi bi-trash me-1"></i>删除选中 (<span id="selected-count">0</span>)
+            <i class="bi bi-trash me-1"></i>Удалить выбранные (<span id="selected-count">0</span>)
           </button>
           {% if logs.items %}
           <button class="btn btn-sm btn-outline-danger" onclick="clearAll()">
-            <i class="bi bi-trash3 me-1"></i>清空所有日志
+            <i class="bi bi-trash3 me-1"></i>Очистить журнал
           </button>
           {% endif %}
         </div>
@@ -107,10 +107,10 @@
               <th style="width:40px">
                 <input type="checkbox" id="select-all" onchange="toggleSelectAll(this)">
               </th>
-              <th>时间 (UTC)</th>
-              <th>类型</th>
-              <th>群组</th>
-              <th>内容</th>
+              <th>Время (UTC)</th>
+              <th>Тип</th>
+              <th>Группа</th>
+              <th>Содержимое</th>
             </tr>
           </thead>
           <tbody>
@@ -124,13 +124,13 @@
               </td>
               <td>
                 {% if log.log_type == 'keyword_matched' %}
-                  <span class="badge bg-primary">关键词匹配</span>
+                  <span class="badge bg-primary">Совпадение ключевых слов</span>
                 {% elif log.log_type == 'auto_replied' %}
-                  <span class="badge bg-success">自动回复</span>
+                  <span class="badge bg-success">Автоответ</span>
                 {% elif log.log_type == 'scheduled_sent' %}
-                  <span class="badge" style="background:#6610f2">定时发送</span>
+                  <span class="badge" style="background:#6610f2">Отправка по расписанию</span>
                 {% elif log.log_type == 'error' %}
-                  <span class="badge bg-danger">错误</span>
+                  <span class="badge bg-danger">Ошибка</span>
                 {% else %}
                   <span class="badge bg-secondary">{{ log.log_type }}</span>
                 {% endif %}
@@ -152,7 +152,7 @@
               {% if logs.has_prev %}
               <li class="page-item">
                 <a class="page-link" href="{{ url_for('logs.index', page=logs.prev_num,
-                   account_id=current_account_id, log_type=current_log_type) }}">上一页</a>
+                   account_id=current_account_id, log_type=current_log_type) }}">Назад</a>
               </li>
               {% endif %}
               <li class="page-item disabled">
@@ -161,7 +161,7 @@
               {% if logs.has_next %}
               <li class="page-item">
                 <a class="page-link" href="{{ url_for('logs.index', page=logs.next_num,
-                   account_id=current_account_id, log_type=current_log_type) }}">下一页</a>
+                   account_id=current_account_id, log_type=current_log_type) }}">Далее</a>
               </li>
               {% endif %}
             </ul>
@@ -172,7 +172,7 @@
         {% else %}
         <div class="text-center text-muted py-5">
           <i class="bi bi-journal fs-2 d-block mb-2"></i>
-          暂无日志记录
+          Журнал пуст
         </div>
         {% endif %}
       </div>
@@ -209,7 +209,7 @@ function updateSelectionUI() {
 async function deleteSelected() {
   const checked = document.querySelectorAll('.log-check:checked');
   if (checked.length === 0) return;
-  if (!confirm(`确定要删除选中的 ${checked.length} 条日志吗？`)) return;
+  if (!confirm(`Удалить выбранные ${checked.length} записей журнала??`)) return;
 
   const ids = Array.from(checked).map(cb => parseInt(cb.value));
   try {
@@ -220,17 +220,17 @@ async function deleteSelected() {
     });
     const result = await res.json();
     if (result.error) {
-      alert('删除失败: ' + result.error);
+      alert('Не удалось удалить: ' + result.error);
     } else {
       location.reload();
     }
   } catch (e) {
-    alert('删除请求失败: ' + e);
+    alert('Ошибка запроса удаления: ' + e);
   }
 }
 
 async function clearAll() {
-  if (!confirm('确定要清空所有日志吗？此操作不可恢复。')) return;
+  if (!confirm('Очистить весь журнал??Это действие необратимо.')) return;
   try {
     const res = await fetch('/logs/api/clear', {
       method: 'POST',
@@ -238,12 +238,12 @@ async function clearAll() {
     });
     const result = await res.json();
     if (result.error) {
-      alert('清空失败: ' + result.error);
+      alert('Не удалось очистить: ' + result.error);
     } else {
       location.reload();
     }
   } catch (e) {
-    alert('清空请求失败: ' + e);
+    alert('Ошибка очистки: ' + e);
   }
 }
 </script>

@@ -43,10 +43,10 @@ with app.app_context():
     for sql, label in migrations:
         try:
             conn.execute(sa.text(sql))
-            print(f'✓ 添加 {label}')
+            print(f'Добавлено: {label}')
         except Exception as e:
-            print(f'  跳过 {label}（已存在）')
+            print(f'Пропущено: {label} (уже существует)')
 
     conn.commit()
     conn.close()
-    print('迁移完成')
+    print('Миграция завершена')

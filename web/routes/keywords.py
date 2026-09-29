@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from models import db, Account, Keyword
+from media import save_image
 
 keywords_bp = Blueprint('keywords', __name__)
 
@@ -21,8 +22,8 @@ def add():
     buffer_type = request.form.get('buffer_type', 'fixed')
     reply_message = request.form.get('reply_message', '').strip()
 
-    if not keyword_text or not reply_message:
-        flash('关键词和回复内容为必填项', 'danger')
+    if not keyword_text or not (reply_message or request.files.get('image')):
+        flash('Укажите ключевые слова и текст или изображение', 'danger')
         return redirect(url_for('keywords.index'))
 
     try:
@@ -84,6 +85,11 @@ def add():
         random_max_seconds=rand_max,
         is_active=True,
     )
+    try:
+        kw.image = save_image()
+    except ValueError as exc:
+        flash(str(exc), 'danger')
+        return redirect(url_for('keywords.index'))
     db.session.add(kw)
     db.session.commit()
 
@@ -92,7 +98,7 @@ def add():
         from web.routes.targets import upsert_target
         upsert_target(target_group_id, target_group_name)
 
-    flash('关键词规则已添加', 'success')
+    flash('Правило добавлено', 'success')
     return redirect(url_for('keywords.index'))
 
 
@@ -138,12 +144,18 @@ def edit(kw_id):
         except ValueError:
             kw.random_max_seconds = 300
 
-        if not kw.keyword or not kw.reply_message:
-            flash('关键词和回复内容为必填项', 'danger')
+        if not kw.keyword or not (kw.reply_message or request.files.get('image') or (kw.image and request.form.get('remove_image') != 'on')):
+            flash('Укажите ключевые слова и текст или изображение', 'danger')
             return render_template('keyword_edit.html', kw=kw, accounts=accounts)
 
+        try:
+            kw.image = save_image(kw.image)
+        except ValueError as exc:
+            db.session.rollback()
+            flash(str(exc), 'danger')
+            return render_template('keyword_edit.html', kw=kw, accounts=accounts)
         db.session.commit()
-        flash('关键词规则已更新', 'success')
+        flash('Правило обновлено', 'success')
         return redirect(url_for('keywords.index'))
 
     return render_template('keyword_edit.html', kw=kw, accounts=accounts)
@@ -154,8 +166,8 @@ def toggle(kw_id):
     kw = Keyword.query.get_or_404(kw_id)
     kw.is_active = not kw.is_active
     db.session.commit()
-    status = '启用' if kw.is_active else '停用'
-    flash(f'规则已{status}', 'success')
+    status = 'Включено' if kw.is_active else 'Отключено'
+    flash(f'Правило: {status}', 'success')
     return redirect(url_for('keywords.index'))
 
 
@@ -164,5 +176,5 @@ def delete(kw_id):
     kw = Keyword.query.get_or_404(kw_id)
     db.session.delete(kw)
     db.session.commit()
-    flash('关键词规则已删除', 'success')
+    flash('Правило удалено', 'success')
     return redirect(url_for('keywords.index'))

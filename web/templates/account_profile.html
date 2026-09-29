@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block title %}Профиль - {{ account.name }}{% endblock %}
+{% block page_title %}Профиль: {{ account.name }}{% endblock %}
+{% block content %}
+<a class="btn btn-outline-secondary mb-4" href="{{ url_for('accounts.index') }}"><i class="bi bi-arrow-left"></i> Аккаунты</a>
+{% macro token(action) %}
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="action" value="{{ action }}">
+{% endmacro %}
+<div class="row g-4">
+  <section class="col-lg-7">
+    <h6>Профиль Telegram</h6>
+    {% if profile %}
+    <form method="post" class="mb-4">
+      {{ token('details') }}
+      <label class="form-label" for="first-name">Имя</label>
+      <input id="first-name" class="form-control mb-3" name="first_name" maxlength="64" required value="{{ request.form.get('first_name', profile.first_name) if request.form.get('action') == 'details' else profile.first_name }}">
+      <label class="form-label" for="last-name">Фамилия</label>
+      <input id="last-name" class="form-control mb-3" name="last_name" maxlength="64" value="{{ request.form.get('last_name', profile.last_name) if request.form.get('action') == 'details' else profile.last_name }}">
+      <label class="form-label" for="about">О себе</label>
+      <textarea id="about" class="form-control mb-3" name="about" rows="3" maxlength="{{ profile.about_limit }}">{{ request.form.get('about', profile.about) if request.form.get('action') == 'details' else profile.about }}</textarea>
+      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> Сохранить профиль</button>
+    </form>
+    <form method="post" class="border-top pt-3 mb-4">
+      {{ token('username') }}
+      <label class="form-label" for="username">Имя пользователя (@username)</label>
+      <div class="input-group mb-3"><span class="input-group-text">@</span><input id="username" class="form-control" name="username" maxlength="33" autocomplete="off" value="{{ request.form.get('username', profile.username) if request.form.get('action') == 'username' else profile.username }}"></div>
+      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> Сохранить @username</button>
+    </form>
+    {% if profile.username %}
+    <form method="post" class="mb-4" onsubmit="return confirm('Удалить @username из Telegram?')">
+      {{ token('username') }}<input type="hidden" name="username" value="">
+      <button class="btn btn-outline-danger"><i class="bi bi-trash"></i> Удалить @username</button>
+    </form>
+    {% endif %}
+    {% else %}<p class="text-muted">Профиль недоступен без подключения к Telegram.</p>{% endif %}
+  </section>
+  <section class="col-lg-5">
+    <h6>Название в панели</h6>
+    <form method="post" class="mb-4">
+      {{ token('label') }}
+      <label class="form-label" for="local-name">Название аккаунта</label>
+      <input id="local-name" class="form-control mb-3" name="name" maxlength="100" required value="{{ account.name }}">
+      <button class="btn btn-outline-primary"><i class="bi bi-check-lg"></i> Сохранить название</button>
+    </form>
+    {% if profile %}
+    <h6 class="border-top pt-3">Фотография профиля</h6>
+    {% if profile.has_photo %}
+    <img src="{{ url_for('profile.photo', account_id=account.id) }}" alt="Фотография профиля" class="mb-3" style="width:160px;height:160px;object-fit:cover;border-radius:8px">
+    {% else %}<p class="text-muted">Фотография не установлена</p>{% endif %}
+    <form method="post" enctype="multipart/form-data" class="mb-3">
+      {{ token('photo') }}
+      <label for="profile-photo" class="form-label">Новая фотография</label>
+      <input id="profile-photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="form-control mb-3" required>
+      <button class="btn btn-primary"><i class="bi bi-upload"></i> Загрузить фотографию</button>
+    </form>
+    {% if profile.has_photo %}
+    <form method="post" onsubmit="return confirm('Удалить текущую фотографию из Telegram? При наличии предыдущей фотографии она станет основной.')">
+      {{ token('delete_photo') }}
+      <button class="btn btn-outline-danger"><i class="bi bi-trash"></i> Удалить текущую фотографию</button>
+    </form>
+    {% endif %}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

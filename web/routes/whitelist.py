@@ -20,7 +20,7 @@ def add():
     note = request.form.get('note', '').strip()
 
     if not entity_id:
-        flash('实体 ID 为必填项', 'danger')
+        flash('Укажите ID получателя', 'danger')
         return redirect(url_for('whitelist.index'))
 
     if account_id:
@@ -35,7 +35,7 @@ def add():
         entity_id=entity_id
     ).first()
     if existing:
-        flash(f'ID {entity_id} 已在白名单中', 'warning')
+        flash(f'ID {entity_id} уже есть в белом списке', 'warning')
         return redirect(url_for('whitelist.index'))
 
     entry = Whitelist(
@@ -53,7 +53,7 @@ def add():
     from web.routes.targets import upsert_target
     upsert_target(entity_id, entity_name, entity_type, note)
 
-    flash(f'已将 {entity_name or entity_id} 加入白名单', 'success')
+    flash(f'Добавлено в белый список: {entity_name or entity_id}', 'success')
     return redirect(url_for('whitelist.index'))
 
 
@@ -62,8 +62,8 @@ def toggle(entry_id):
     entry = Whitelist.query.get_or_404(entry_id)
     entry.is_active = not entry.is_active
     db.session.commit()
-    status = '启用' if entry.is_active else '停用'
-    flash(f'{entry.entity_name or entry.entity_id} 已{status}', 'success')
+    status = 'Включено' if entry.is_active else 'Отключено'
+    flash(f'{entry.entity_name or entry.entity_id}: {status}', 'success')
     return redirect(url_for('whitelist.index'))
 
 
@@ -73,5 +73,5 @@ def delete(entry_id):
     name = entry.entity_name or entry.entity_id
     db.session.delete(entry)
     db.session.commit()
-    flash(f'{name} 已从白名单移除', 'success')
+    flash(f'Удалено из белого списка: {name}', 'success')
     return redirect(url_for('whitelist.index'))

@@ -14,6 +14,7 @@ class Account(db.Model):
     api_id = db.Column(db.Integer, nullable=False)
     api_hash = db.Column(db.String(100), nullable=False)
     session_string = db.Column(db.Text)
+    session_kind = db.Column(db.String(20), default='telethon')
     is_active = db.Column(db.Boolean, default=True)
     # pending / authorized / error
     status = db.Column(db.String(50), default='pending')
@@ -55,6 +56,7 @@ class Keyword(db.Model):
     buffer_random_min = db.Column(db.Integer, default=0)
     buffer_random_max = db.Column(db.Integer, default=0)
     reply_message = db.Column(db.Text, nullable=False)
+    image = db.Column(db.String(100), nullable=True)
     # 指定发送目标群组（可选）。填写后回复固定发到此群组，而非触发消息所在的聊天
     target_group_id = db.Column(db.String(100))
     target_group_name = db.Column(db.String(200), default='')
@@ -100,6 +102,7 @@ class ScheduledTask(db.Model):
     group_name = db.Column(db.String(200), default='')
     topic_id = db.Column(db.Integer, nullable=True)   # Forum 话题 ID
     message = db.Column(db.Text, nullable=False)
+    image = db.Column(db.String(100), nullable=True)
     # interval: 按间隔；cron: 按cron表达式
     task_type = db.Column(db.String(20), default='interval')
     interval_minutes = db.Column(db.Integer)
@@ -140,6 +143,7 @@ class PendingReply(db.Model):
     keyword_id = db.Column(db.Integer, db.ForeignKey('keywords.id'), nullable=True)
     topic_id = db.Column(db.Integer, nullable=True)   # Forum 话题 ID，None 表示不指定
     message = db.Column(db.Text, nullable=False)
+    image = db.Column(db.String(100), nullable=True)
     scheduled_at = db.Column(db.DateTime, nullable=False)
     is_sent = db.Column(db.Boolean, default=False)
     sent_at = db.Column(db.DateTime)

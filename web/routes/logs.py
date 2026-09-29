@@ -44,7 +44,7 @@ def delete_items():
     """删除指定的日志条目"""
     data = request.get_json(silent=True)
     if not data or 'ids' not in data:
-        return jsonify({'error': '缺少 ids 参数'}), 400
+        return jsonify({'error': 'Не выбраны записи'}), 400
 
     ids = data['ids']
     deleted = MessageLog.query.filter(MessageLog.id.in_(ids)).delete(synchronize_session=False)

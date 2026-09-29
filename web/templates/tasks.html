@@ -1,125 +1,127 @@
 {% extends 'base.html' %}
-{% block title %}定时任务 - TG Bot{% endblock %}
-{% block page_title %}定时发送任务{% endblock %}
+{% block title %}Задачи по расписанию - Ephiop{% endblock %}
+{% block page_title %}Задача по расписанию{% endblock %}
 
 {% block content %}
 <div class="row g-4">
-  <!-- 添加任务 -->
+  <!-- Добавить задачу -->
   <div class="col-lg-4">
     <div class="card">
       <div class="card-header bg-white fw-semibold">
-        <i class="bi bi-plus-circle me-1"></i>添加定时任务
+        <i class="bi bi-plus-circle me-1"></i>Добавить задачу
       </div>
       <div class="card-body">
-        <form method="post" action="{{ url_for('tasks.add') }}" id="task-form">
+        <form enctype="multipart/form-data" method="post" action="{{ url_for('tasks.add') }}" id="task-form">
           <div class="mb-3">
-            <label class="form-label">账号 <span class="text-danger">*</span></label>
+            <label class="form-label">Аккаунт <span class="text-danger">*</span></label>
             <select name="account_id" id="task-account" class="form-select" required
                     onchange="resolveTarget(null)">
-              <option value="">请选择账号</option>
+              <option value="">Выберите аккаунт</option>
               {% for acc in accounts %}
               <option value="{{ acc.id }}">{{ acc.name }} ({{ acc.phone }})</option>
               {% endfor %}
             </select>
           </div>
           <div class="mb-2">
-            <label class="form-label">从已保存目标中选择</label>
+            <label class="form-label">Выбрать сохранённого получателя</label>
             <select id="task-target-select" class="form-select form-select-sm"
                     onchange="fillTargetFromList('task-target-select','task-target','task-group-name')">
-              <option value="">— 手动输入 / 从列表选择 —</option>
+              <option value="">— Указать вручную / Выбрать из списка —</option>
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">目标 ID <span class="text-danger">*</span>
+            <label class="form-label">ID получателя <span class="text-danger">*</span>
               <span id="task-target-badge" class="ms-1"></span>
             </label>
             <input type="text" name="group_id" id="task-target" class="form-control"
-                   placeholder="用户/机器人/群组/频道的数字 ID" required
+                   placeholder="Числовой ID получателя" required
                    oninput="scheduleDetect()">
             <div class="form-text" id="task-target-hint">
-              支持用户、机器人、群组、超级群、频道的数字 ID。
+              ID пользователя, бота, группы или канала.
             </div>
           </div>
           <div class="mb-3">
-            <label class="form-label">目标备注</label>
-            <input type="text" name="group_name" id="task-group-name" class="form-control" placeholder="可选，便于识别">
+            <label class="form-label">Примечание</label>
+            <input type="text" name="group_name" id="task-group-name" class="form-control" placeholder="Необязательное название">
           </div>
           <div class="mb-3" id="task-topic-section" style="display:none">
             <label class="form-label">
-              <i class="bi bi-chat-square-text me-1"></i>发送到话题
+              <i class="bi bi-chat-square-text me-1"></i>Тема для отправки
             </label>
             <div id="task-topic-loading" class="d-none text-muted small py-1">
-              <span class="spinner-border spinner-border-sm me-1"></span>正在检测话题...
+              <span class="spinner-border spinner-border-sm me-1"></span>Проверка тем...
             </div>
             <div id="task-topic-select-wrap" class="d-none">
               <select name="topic_id" id="task-topic-select" class="form-select" disabled>
-                <option value="">（不指定 / 默认话题）</option>
+                <option value=""> (Не задано / Основная тема)</option>
               </select>
             </div>
             <div id="task-topic-input-wrap" class="d-none">
               <input type="number" name="topic_id" id="task-topic-input" class="form-control"
-                     placeholder="手动输入话题 ID">
+                     placeholder="ID темы">
             </div>
             <div class="form-text" id="task-topic-help"></div>
           </div>
           <div class="mb-3">
-            <label class="form-label">发送消息内容 <span class="text-danger">*</span></label>
+            <label class="form-label">Текст сообщения</label>
             <textarea name="message" class="form-control" rows="3"
-                      placeholder="定时发送的消息" required></textarea>
+                      placeholder="Текст сообщения"></textarea>
+{% with current_image=none %}{% include "_image_field.html" %}{% endwith %}
+
           </div>
           <div class="mb-3">
-            <label class="form-label">任务类型</label>
+            <label class="form-label">Тип задачи</label>
             <div class="btn-group w-100" role="group">
               <input type="radio" class="btn-check" name="task_type" id="type_interval"
                      value="interval" checked onchange="switchType()">
-              <label class="btn btn-outline-primary" for="type_interval">按间隔</label>
+              <label class="btn btn-outline-primary" for="type_interval">По интервалу</label>
               <input type="radio" class="btn-check" name="task_type" id="type_cron"
                      value="cron" onchange="switchType()">
-              <label class="btn btn-outline-primary" for="type_cron">Cron 表达式</label>
+              <label class="btn btn-outline-primary" for="type_cron">Выражение Cron</label>
             </div>
           </div>
           <div id="interval-field" class="mb-3">
-            <label class="form-label">间隔分钟数 <span class="text-danger">*</span></label>
+            <label class="form-label">Интервал, минут <span class="text-danger">*</span></label>
             <div class="input-group">
               <input type="number" name="interval_minutes" class="form-control"
                      placeholder="60" min="1">
-              <span class="input-group-text">分钟</span>
+              <span class="input-group-text">мин.</span>
             </div>
           </div>
           <div id="random-delay-field" class="mb-3">
-            <label class="form-label">随机延迟范围（秒）</label>
+            <label class="form-label">Диапазон задержки (с)</label>
             <div class="input-group">
-              <span class="input-group-text">最小</span>
+              <span class="input-group-text">Минимум</span>
               <input type="number" name="random_delay_min" class="form-control"
                      placeholder="0" min="0" value="0">
-              <span class="input-group-text">最大</span>
+              <span class="input-group-text">Максимум</span>
               <input type="number" name="random_delay_max" class="form-control"
                      placeholder="0" min="0" value="0">
-              <span class="input-group-text">秒</span>
+              <span class="input-group-text">с</span>
             </div>
-            <div class="form-text">填写后每次触发时额外随机等待指定范围内的秒数，两项均填 0 则不启用</div>
+            <div class="form-text">Укажите 0 в обоих полях, чтобы отключить задержку.</div>
           </div>
           <div id="cron-field" class="mb-3" style="display:none">
-            <label class="form-label">Cron 表达式 <span class="text-danger">*</span></label>
+            <label class="form-label">Выражение Cron <span class="text-danger">*</span></label>
             <input type="text" name="cron_expression" class="form-control"
                    placeholder="0 9 * * *">
             <div class="form-text">
-              格式：分 时 日 月 周。如 <code>0 9 * * *</code> 表示每天 09:00（UTC）。
+              Минута, час, день, месяц, день недели. Например: <code>0 9 * * *</code> ежедневно в 09:00 (UTC).
             </div>
           </div>
           <button type="submit" class="btn btn-primary w-100">
-            <i class="bi bi-clock-history me-1"></i>添加任务
+            <i class="bi bi-clock-history me-1"></i>Добавить задачу
           </button>
         </form>
       </div>
     </div>
   </div>
 
-  <!-- 任务列表 -->
+  <!-- Список задач -->
   <div class="col-lg-8">
     <div class="card">
       <div class="card-header bg-white fw-semibold">
-        <i class="bi bi-list-task me-1"></i>任务列表
+        <i class="bi bi-list-task me-1"></i>Список задач
         <span class="badge bg-secondary ms-1">{{ tasks|length }}</span>
       </div>
       <div class="card-body p-0">
@@ -127,13 +129,13 @@
         <table class="table table-hover align-middle mb-0">
           <thead class="table-light">
             <tr>
-              <th>账号</th>
-              <th>目标</th>
-              <th>话题</th>
-              <th>消息</th>
-              <th>执行规则</th>
-              <th>状态</th>
-              <th>操作</th>
+              <th>Аккаунт</th>
+              <th>Получатель</th>
+              <th>Тема</th>
+              <th>Сообщение</th>
+              <th>Выполнить правила</th>
+              <th>Статус</th>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -150,54 +152,55 @@
                 {% if task.topic_id %}
                   <span class="badge bg-primary"><i class="bi bi-chat-square-text me-1"></i>#{{ task.topic_id }}</span>
                 {% else %}
-                  <span class="text-muted">默认</span>
+                  <span class="text-muted">По умолчанию</span>
                 {% endif %}
               </td>
               <td class="small text-truncate" style="max-width:130px" title="{{ task.message }}">
                 {{ task.message }}
+                {% if task.image %}<i class="bi bi-image" title="С изображением"></i>{% endif %}
               </td>
               <td class="small">
                 {% if task.task_type == 'interval' %}
                   <span class="badge bg-info text-dark">
-                    每 {{ task.interval_minutes }} 分钟
+                    Каждые {{ task.interval_minutes }} мин.
                   </span>
                   {% if task.random_delay_min and task.random_delay_max and task.random_delay_max > 0 %}
                   <br><span class="text-muted" style="font-size:.75rem">
-                    +随机 {{ task.random_delay_min }}~{{ task.random_delay_max }}s
+                    +Случайно {{ task.random_delay_min }}~{{ task.random_delay_max }}s
                   </span>
                   {% endif %}
                 {% else %}
                   <code class="small">{{ task.cron_expression }}</code>
                   {% if task.random_delay_min and task.random_delay_max and task.random_delay_max > 0 %}
                   <br><span class="text-muted" style="font-size:.75rem">
-                    +随机 {{ task.random_delay_min }}~{{ task.random_delay_max }}s
+                    +Случайно {{ task.random_delay_min }}~{{ task.random_delay_max }}s
                   </span>
                   {% endif %}
                 {% endif %}
               </td>
               <td>
                 {% if task.is_active %}
-                  <span class="badge bg-success">运行中</span>
+                  <span class="badge bg-success">Работает</span>
                 {% else %}
-                  <span class="badge bg-secondary">已停止</span>
+                  <span class="badge bg-secondary">Остановлено</span>
                 {% endif %}
               </td>
               <td>
                 <div class="btn-group btn-group-sm">
                   <a href="{{ url_for('tasks.edit', task_id=task.id) }}"
-                     class="btn btn-outline-secondary" title="编辑">
+                     class="btn btn-outline-secondary" title="Редактировать">
                     <i class="bi bi-pencil"></i>
                   </a>
                   <form method="post" action="{{ url_for('tasks.toggle', task_id=task.id) }}" class="d-inline">
                     <button class="btn btn-outline-{{ 'warning' if task.is_active else 'success' }}"
-                            title="{{ '停止' if task.is_active else '启动' }}">
+                            title="{{ 'Остановить' if task.is_active else 'Запустить' }}">
                       <i class="bi bi-{{ 'pause' if task.is_active else 'play' }}"></i>
                     </button>
                   </form>
                   <form method="post" action="{{ url_for('tasks.delete', task_id=task.id) }}"
                         class="d-inline"
-                        onsubmit="return confirm('确定删除此定时任务吗？')">
-                    <button class="btn btn-outline-danger" title="删除">
+                        onsubmit="return confirm('Удалить задачу??')">
+                    <button class="btn btn-outline-danger" title="Удалить">
                       <i class="bi bi-trash"></i>
                     </button>
                   </form>
@@ -210,7 +213,7 @@
         {% else %}
         <div class="text-center text-muted py-5">
           <i class="bi bi-clock fs-2 d-block mb-2"></i>
-          还没有定时任务，请在左侧添加
+          Задач пока нет
         </div>
         {% endif %}
       </div>
@@ -229,12 +232,12 @@ function switchType() {
 
 // ── 目标实体识别 + 话题检测 ──
 const KIND_BADGE = {
-  user:       ['bg-info text-dark',    'bi-person',         '用户'],
-  bot:        ['bg-secondary',         'bi-robot',          '机器人'],
-  group:      ['bg-success',           'bi-people',         '群组'],
-  supergroup: ['bg-success',           'bi-people-fill',    '超级群'],
-  channel:    ['bg-primary',           'bi-megaphone-fill', '频道'],
-  unknown:    ['bg-warning text-dark', 'bi-question',       '未知'],
+  user:       ['bg-info text-dark',    'bi-person',         'Пользователь'],
+  bot:        ['bg-secondary',         'bi-robot',          'Бот'],
+  group:      ['bg-success',           'bi-people',         'Группа'],
+  supergroup: ['bg-success',           'bi-people-fill',    'Супергруппа'],
+  channel:    ['bg-primary',           'bi-megaphone-fill', 'Канал'],
+  unknown:    ['bg-warning text-dark', 'bi-question',       'Неизвестно'],
 };
 
 let _resolveTimer = null;
@@ -261,20 +264,20 @@ async function resolveTarget(preselect) {
     return;
   }
 
-  if (badge) badge.innerHTML = '<span class="badge bg-light text-muted"><span class="spinner-border spinner-border-sm me-1"></span>识别中…</span>';
+  if (badge) badge.innerHTML = '<span class="badge bg-light text-muted"><span class="spinner-border spinner-border-sm me-1"></span>Определение…</span>';
 
   try {
     const resp = await fetch(`/accounts/${accountId}/resolve/${encodeURIComponent(targetId)}`);
     const data = await resp.json();
     if (data.error) {
-      if (badge) badge.innerHTML = `<span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>无法识别</span>`;
+      if (badge) badge.innerHTML = `<span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>Не удалось определить</span>`;
       section.style.display = 'none';
       _resetTopicUI();
       return;
     }
     const [bgCls, icon, label] = KIND_BADGE[data.kind] || KIND_BADGE.unknown;
-    if (badge) badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}：${data.name}</span>`;
-    if (hint)  hint.textContent = `已识别为「${label}」（ID: ${data.id}）`;
+    if (badge) badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}: ${data.name}</span>`;
+    if (hint)  hint.textContent = `Тип:«${label}» (ID: ${data.id})`;
 
     if (data.is_forum) {
       await _detectTopics(accountId, targetId, preselect);
@@ -329,7 +332,7 @@ function _showSelect(topics, preselect) {
   document.getElementById('task-topic-input').disabled = true;
   const sel = document.getElementById('task-topic-select');
   sel.disabled = false;
-  sel.innerHTML = '<option value="">（不指定 / 默认话题）</option>';
+  sel.innerHTML = '<option value=""> (Не задано / Основная тема)</option>';
   topics.forEach(t => {
     const opt = document.createElement('option');
     opt.value = t.id;
@@ -338,7 +341,7 @@ function _showSelect(topics, preselect) {
     sel.appendChild(opt);
   });
   const helpEl = document.getElementById('task-topic-help');
-  if (helpEl) helpEl.textContent = '已检测到 Forum 话题，请从列表中选择。';
+  if (helpEl) helpEl.textContent = 'Выберите тему из списка.';
 }
 
 // ── 目标列表快速填充 ──
@@ -351,7 +354,7 @@ function fillTargetFromList(selectId, idFieldId, nameFieldId) {
   if (nameField && opt.dataset.name) nameField.value = opt.dataset.name;
   // 触发识别
   scheduleDetect();
-  // 重置下拉（避免误导）
+  // 重置下拉 (避免误导)
   sel.selectedIndex = 0;
 }
 
@@ -363,13 +366,13 @@ async function loadTargetList() {
     selIds.forEach(sid => {
       const sel = document.getElementById(sid);
       if (!sel) return;
-      // 清除旧选项（保留第一个占位）
+      // 清除旧选项 (保留第一个占位)
       while (sel.options.length > 1) sel.remove(1);
       data.forEach(t => {
         const opt = document.createElement('option');
         opt.value = t.entity_id;
         opt.dataset.name = t.name || '';
-        const typeLabel = { user:'用户', bot:'机器人', group:'群组', supergroup:'超级群', channel:'频道', unknown:'未知' }[t.entity_type] || '';
+        const typeLabel = { user:'Пользователь', bot:'Бот', group:'Группа', supergroup:'Супергруппа', channel:'Канал', unknown:'Неизвестно' }[t.entity_type] || '';
         opt.textContent = `${t.name || t.entity_id}  [${typeLabel}]  ${t.entity_id}`;
         sel.appendChild(opt);
       });

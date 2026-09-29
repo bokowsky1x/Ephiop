@@ -32,19 +32,20 @@ def api():
         remaining = (r.scheduled_at - now).total_seconds()
         result.append({
             'type': 'pending_reply',
-            'type_label': '关键词回复',
+            'type_label': 'Автоответ',
             'id': r.id,
             'account': account_map.get(r.account_id, str(r.account_id)),
             'group_id': r.group_id,
             'group_name': target_map.get(r.group_id, ''),
             'topic_id': r.topic_id,
             'message': r.message[:80] + ('…' if len(r.message) > 80 else ''),
+            'image': r.image,
             'scheduled_at': r.scheduled_at.strftime('%Y-%m-%d %H:%M:%S UTC'),
             'remaining_seconds': max(0, int(remaining)),
             'triggered_by': r.triggered_by or '',
         })
 
-    # --- 2. 定时任务 (ScheduledTask) 的下次运行时间 ---
+    # --- 2. Задача по расписанию (ScheduledTask) 的下次运行时间 ---
     manager = current_app.telegram_manager
     tasks = ScheduledTask.query.filter_by(is_active=True).order_by(ScheduledTask.id).all()
     for task in tasks:
@@ -64,24 +65,25 @@ def api():
 
         task_info = task.task_type
         if task.task_type == 'interval' and task.interval_minutes:
-            task_info = f'每 {task.interval_minutes} 分钟'
+            task_info = f'Каждые {task.interval_minutes} мин.'
         elif task.task_type == 'cron' and task.cron_expression:
             task_info = f'Cron: {task.cron_expression}'
 
         result.append({
             'type': 'scheduled_task',
-            'type_label': '定时任务',
+            'type_label': 'Задача по расписанию',
             'id': task.id,
             'account': account_map.get(task.account_id, str(task.account_id)),
             'group_id': task.group_id,
             'group_name': task.group_name or '',
             'topic_id': task.topic_id,
             'message': task.message[:80] + ('…' if len(task.message) > 80 else ''),
+            'image': task.image,
             'task_info': task_info,
             'scheduled_at': next_run or '—',
             'remaining_seconds': remaining_sec,  # None 表示未加载到 scheduler
             'random_delay': (
-                f'+{task.random_delay_min}~{task.random_delay_max}s 随机延迟'
+                f'+{task.random_delay_min}~{task.random_delay_max}s случайная задержка'
                 if (task.random_delay_max or 0) > 0 else ''
             ),
         })
@@ -96,7 +98,7 @@ def delete_items():
     """删除指定的待发送任务（支持 pending_reply 类型）"""
     data = request.get_json(silent=True)
     if not data or 'items' not in data:
-        return jsonify({'error': '缺少 items 参数'}), 400
+        return jsonify({'error': 'Не выбраны записи'}), 400
 
     items = data['items']
     deleted = 0

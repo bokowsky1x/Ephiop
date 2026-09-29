@@ -38,7 +38,7 @@ def main():
 
     # 启动 Flask Web 服务（主线程）
     logging.getLogger(__name__).info(
-        f'Web 管理界面已启动: http://{Config.WEB_HOST}:{Config.WEB_PORT}'
+        f'Веб-панель запущена: http://{Config.WEB_HOST}:{Config.WEB_PORT}'
     )
     app.run(
         host=Config.WEB_HOST,

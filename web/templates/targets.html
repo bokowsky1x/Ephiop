@@ -1,23 +1,23 @@
 {% extends 'base.html' %}
-{% block title %}目标列表 - TG Bot{% endblock %}
-{% block page_title %}目标列表{% endblock %}
+{% block title %}Получатели - Ephiop{% endblock %}
+{% block page_title %}Получатели{% endblock %}
 
 {% block content %}
 <div class="row g-4">
-  <!-- 手动添加 -->
+  <!-- Добавить вручную -->
   <div class="col-lg-4">
     <div class="card">
       <div class="card-header bg-white fw-semibold">
-        <i class="bi bi-plus-circle me-1"></i>手动添加目标
+        <i class="bi bi-plus-circle me-1"></i>Добавить получателя
       </div>
       <div class="card-body">
         <form method="post" action="{{ url_for('targets.add') }}" id="target-form">
-          <!-- 用于自动检测的账号（不提交） -->
+          <!-- Аккаунт для определения получателя (不提交) -->
           <div class="mb-3">
-            <label class="form-label text-muted small">选择账号（用于自动检测类型）</label>
+            <label class="form-label text-muted small">Выберите аккаунт (Для определения типа)</label>
             <select id="tgt-account" class="form-select form-select-sm"
                     onchange="scheduleDetect()">
-              <option value="">— 选择账号以自动识别 —</option>
+              <option value="">— Выберите аккаунт для определения получателя —</option>
               {% for acc in accounts %}
               <option value="{{ acc.id }}">{{ acc.name }} ({{ acc.phone }})</option>
               {% endfor %}
@@ -25,76 +25,76 @@
           </div>
 
           <div class="mb-3">
-            <label class="form-label">目标 ID <span class="text-danger">*</span>
+            <label class="form-label">ID получателя <span class="text-danger">*</span>
               <span id="tgt-badge" class="ms-1"></span>
             </label>
             <input type="text" name="entity_id" id="tgt-id" class="form-control"
-                   placeholder="数字 ID" required
+                   placeholder="Числовой ID" required
                    oninput="scheduleDetect()">
-            <div class="form-text" id="tgt-hint">输入 ID 后将自动识别类型和名称</div>
+            <div class="form-text" id="tgt-hint">Тип и название определяются по ID.</div>
           </div>
 
           <div class="mb-3">
-            <label class="form-label">显示名称</label>
+            <label class="form-label">Название</label>
             <input type="text" name="name" id="tgt-name" class="form-control"
-                   placeholder="便于识别的名称（自动填入或手动输入）">
+                   placeholder="Понятное название (Автоматически или вручную)">
           </div>
 
-          <!-- 类型：隐藏真实值，显示识别结果；未识别时用 select 手动选 -->
+          <!-- Тип: 隐藏真实值, 显示识别结果；未识别时用 select 手动选 -->
           <div class="mb-3">
-            <label class="form-label">类型</label>
+            <label class="form-label">Тип</label>
             <div id="tgt-type-detected" class="d-none mb-1"></div>
             <div id="tgt-type-manual">
               <select name="entity_type" id="tgt-type-select" class="form-select form-select-sm">
-                <option value="unknown">未知</option>
-                <option value="user">用户 (user)</option>
-                <option value="bot">机器人 (bot)</option>
-                <option value="group">群组 (group)</option>
-                <option value="supergroup">超级群 (supergroup)</option>
-                <option value="channel">频道 (channel)</option>
+                <option value="unknown">Неизвестно</option>
+                <option value="user">Пользователь (user)</option>
+                <option value="bot">Бот (bot)</option>
+                <option value="group">Группа (group)</option>
+                <option value="supergroup">Супергруппа (supergroup)</option>
+                <option value="channel">Канал (channel)</option>
               </select>
             </div>
             <!-- 识别成功后的隐藏 input 覆盖 select -->
             <input type="hidden" name="entity_type" id="tgt-type-hidden" disabled>
           </div>
 
-          <!-- 话题区（仅 Forum 群组弹出） -->
+          <!-- 话题区 (Только Forum 群组弹出) -->
           <div id="tgt-topic-section" class="mb-3" style="display:none">
             <label class="form-label">
-              <i class="bi bi-chat-square-text me-1"></i>关联话题
+              <i class="bi bi-chat-square-text me-1"></i>Связанная тема
             </label>
             <div id="tgt-topic-loading" class="d-none text-muted small py-1">
-              <span class="spinner-border spinner-border-sm me-1"></span>正在获取话题列表…
+              <span class="spinner-border spinner-border-sm me-1"></span>Загрузка тем…
             </div>
             <div id="tgt-topic-select-wrap" class="d-none">
               <select name="topic_id" id="tgt-topic-select" class="form-select" disabled>
-                <option value="">（不指定话题）</option>
+                <option value=""> (Без темы)</option>
               </select>
             </div>
             <div id="tgt-topic-input-wrap" class="d-none">
               <input type="number" name="topic_id" id="tgt-topic-input" class="form-control"
-                     placeholder="手动输入话题 ID">
+                     placeholder="ID темы">
             </div>
             <div class="form-text" id="tgt-topic-help"></div>
           </div>
 
           <div class="mb-3">
-            <label class="form-label">备注</label>
-            <input type="text" name="note" class="form-control" placeholder="可选说明">
+            <label class="form-label">Примечание</label>
+            <input type="text" name="note" class="form-control" placeholder="Необязательное описание">
           </div>
           <button type="submit" class="btn btn-primary w-100">
-            <i class="bi bi-plus-circle me-1"></i>添加到目标列表
+            <i class="bi bi-plus-circle me-1"></i>Добавить получателя
           </button>
         </form>
       </div>
     </div>
   </div>
 
-  <!-- 目标列表 -->
+  <!-- Получатели -->
   <div class="col-lg-8">
     <div class="card">
       <div class="card-header bg-white fw-semibold">
-        <i class="bi bi-bookmark-star me-1"></i>已保存目标
+        <i class="bi bi-bookmark-star me-1"></i>Сохранённые получатели
         <span class="badge bg-secondary ms-1">{{ targets|length }}</span>
       </div>
       <div class="card-body p-0">
@@ -102,12 +102,12 @@
         <table class="table table-hover align-middle mb-0">
           <thead class="table-light">
             <tr>
-              <th>名称</th>
+              <th>Название</th>
               <th>ID</th>
-              <th>类型</th>
-              <th>话题</th>
-              <th>备注</th>
-              <th>操作</th>
+              <th>Тип</th>
+              <th>Тема</th>
+              <th>Примечание</th>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -117,12 +117,12 @@
               <td class="small text-muted font-monospace">{{ t.entity_id }}</td>
               <td>
                 {% set type_map = {
-                  'user': ('bg-info text-dark', 'bi-person', '用户'),
-                  'bot': ('bg-secondary', 'bi-robot', '机器人'),
-                  'group': ('bg-success', 'bi-people', '群组'),
-                  'supergroup': ('bg-success', 'bi-people-fill', '超级群'),
-                  'channel': ('bg-primary', 'bi-megaphone-fill', '频道'),
-                  'unknown': ('bg-light text-dark', 'bi-question', '未知'),
+                  'user': ('bg-info text-dark', 'bi-person', 'Пользователь'),
+                  'bot': ('bg-secondary', 'bi-robot', 'Бот'),
+                  'group': ('bg-success', 'bi-people', 'Группа'),
+                  'supergroup': ('bg-success', 'bi-people-fill', 'Супергруппа'),
+                  'channel': ('bg-primary', 'bi-megaphone-fill', 'Канал'),
+                  'unknown': ('bg-light text-dark', 'bi-question', 'Неизвестно'),
                 } %}
                 {% set badge = type_map.get(t.entity_type, type_map['unknown']) %}
                 <span class="badge {{ badge[0] }}">
@@ -140,8 +140,8 @@
               <td>
                 <form method="post" action="{{ url_for('targets.delete', target_id=t.id) }}"
                       class="d-inline"
-                      onsubmit="return confirm('确定删除此目标？')">
-                  <button class="btn btn-sm btn-outline-danger" title="删除">
+                      onsubmit="return confirm('Удалить получателя?')">
+                  <button class="btn btn-sm btn-outline-danger" title="Удалить">
                     <i class="bi bi-trash"></i>
                   </button>
                 </form>
@@ -153,7 +153,7 @@
         {% else %}
         <div class="text-center text-muted py-5">
           <i class="bi bi-bookmark-star fs-2 d-block mb-2"></i>
-          还没有保存的目标，在定时任务或关键词回复中填写目标后将自动保存
+          Получателей пока нет
         </div>
         {% endif %}
       </div>
@@ -165,12 +165,12 @@
 {% block scripts %}
 <script>
 const KIND_BADGE = {
-  user:       ['bg-info text-dark',    'bi-person',         '用户'],
-  bot:        ['bg-secondary',         'bi-robot',          '机器人'],
-  group:      ['bg-success',           'bi-people',         '群组'],
-  supergroup: ['bg-success',           'bi-people-fill',    '超级群'],
-  channel:    ['bg-primary',           'bi-megaphone-fill', '频道'],
-  unknown:    ['bg-warning text-dark', 'bi-question',       '未知'],
+  user:       ['bg-info text-dark',    'bi-person',         'Пользователь'],
+  bot:        ['bg-secondary',         'bi-robot',          'Бот'],
+  group:      ['bg-success',           'bi-people',         'Группа'],
+  supergroup: ['bg-success',           'bi-people-fill',    'Супергруппа'],
+  channel:    ['bg-primary',           'bi-megaphone-fill', 'Канал'],
+  unknown:    ['bg-warning text-dark', 'bi-question',       'Неизвестно'],
 };
 
 let _detTimer = null;
@@ -191,20 +191,20 @@ async function resolveTarget() {
 
   if (!targetId || !accountId) {
     badge.innerHTML = '';
-    hint.textContent = '输入 ID 后将自动识别类型和名称';
+    hint.textContent = 'Тип и название определяются по ID.';
     section.style.display = 'none';
     _resetTopicUI();
     _showManualType();
     return;
   }
 
-  badge.innerHTML = '<span class="badge bg-light text-muted"><span class="spinner-border spinner-border-sm me-1"></span>识别中…</span>';
+  badge.innerHTML = '<span class="badge bg-light text-muted"><span class="spinner-border spinner-border-sm me-1"></span>Определение…</span>';
 
   try {
     const resp = await fetch(`/accounts/${accountId}/resolve/${encodeURIComponent(targetId)}`);
     const data = await resp.json();
     if (data.error) {
-      badge.innerHTML = `<span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>无法识别</span>`;
+      badge.innerHTML = `<span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>Не удалось определить</span>`;
       hint.textContent = data.error;
       section.style.display = 'none';
       _resetTopicUI();
@@ -213,10 +213,10 @@ async function resolveTarget() {
     }
 
     const [bgCls, icon, label] = KIND_BADGE[data.kind] || KIND_BADGE.unknown;
-    badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}：${data.name}</span>`;
-    hint.textContent = `已识别为「${label}」（ID: ${data.id}）`;
+    badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}: ${data.name}</span>`;
+    hint.textContent = `Тип:«${label}» (ID: ${data.id})`;
 
-    // 自动填入名称（如果还空）
+    // Название определяется автоматически (如果还空)
     const nameField = document.getElementById('tgt-name');
     if (nameField && !nameField.value) nameField.value = data.name;
 
@@ -242,14 +242,14 @@ function _setDetectedType(kind, label, bgCls, icon) {
   const sel      = document.getElementById('tgt-type-select');
 
   detected.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}</span>
-    <a href="#" class="ms-2 small text-muted" onclick="event.preventDefault();_showManualType()">手动修改</a>`;
+    <a href="#" class="ms-2 small text-muted" onclick="event.preventDefault();_showManualType()">Изменить вручную</a>`;
   detected.classList.remove('d-none');
   manual.classList.add('d-none');
 
   hidden.value = kind;
   hidden.disabled = false;
   sel.disabled = true;
-  // 禁用 select 的 name，让 hidden 覆盖
+  // Отключить select   name,   hidden 覆盖
   sel.name = '';
   hidden.name = 'entity_type';
 }
@@ -305,7 +305,7 @@ function _showInput() {
   document.getElementById('tgt-topic-input').name = 'topic_id';
   document.getElementById('tgt-topic-select').disabled = true;
   document.getElementById('tgt-topic-select').name = '';
-  document.getElementById('tgt-topic-help').textContent = '未能获取话题列表，可手动输入话题 ID。';
+  document.getElementById('tgt-topic-help').textContent = 'Не удалось загрузить темы, Можно указать тему вручную ID.';
 }
 
 function _showSelect(topics) {
@@ -317,14 +317,14 @@ function _showSelect(topics) {
   const sel = document.getElementById('tgt-topic-select');
   sel.disabled = false;
   sel.name = 'topic_id';
-  sel.innerHTML = '<option value="">（不指定话题）</option>';
+  sel.innerHTML = '<option value=""> (Без темы)</option>';
   topics.forEach(t => {
     const opt = document.createElement('option');
     opt.value = t.id;
     opt.textContent = `#${t.id}  ${t.title}`;
     sel.appendChild(opt);
   });
-  document.getElementById('tgt-topic-help').textContent = '已检测到 Forum 话题，请从列表中选择（可选）。';
+  document.getElementById('tgt-topic-help').textContent = 'Выберите тему из списка (Необязательно).';
 }
 </script>
 {% endblock %}

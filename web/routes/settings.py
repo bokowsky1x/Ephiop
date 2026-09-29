@@ -27,5 +27,5 @@ def save():
         threshold = '60'
     set_setting('smart_dedup_threshold_minutes', threshold)
 
-    flash('设置已保存', 'success')
+    flash('Настройки сохранены', 'success')
     return redirect(url_for('settings.index'))

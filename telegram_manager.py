@@ -6,6 +6,7 @@ from typing import Dict, Optional
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from media import send_content
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class TelegramManager:
         await self._reload_scheduled_tasks()
         self._refresh_trigger_modes()
 
-        # 每分钟重新加载定时任务（捕获 Web 端新增的任务）
+        # 每分钟重新加载Задача по расписанию（捕获 Web 端新增的任务）
         self.scheduler.add_job(
             self._reload_scheduled_tasks,
             'interval',
@@ -68,7 +69,7 @@ class TelegramManager:
             id='reload_scheduled_tasks'
         )
 
-        logger.info('TelegramManager 初始化完成')
+        logger.info('Telegram запущен')
 
     # ------------------------------------------------------------------
     # 账号管理
@@ -81,7 +82,7 @@ class TelegramManager:
             accounts = Account.query.filter_by(is_active=True, status='authorized').all()
             for acc in accounts:
                 await self._start_client(
-                    acc.id, acc.phone, acc.api_id, acc.api_hash, acc.session_string
+                    acc.id, acc.phone, acc.api_id, acc.api_hash, acc.session_string, acc.session_kind
                 )
 
     async def _start_client(
@@ -91,6 +92,7 @@ class TelegramManager:
         api_id: int,
         api_hash: str,
         session_string: str,
+        session_kind: str = 'telethon',
     ):
         """为指定账号启动 Telethon 客户端并注册消息监听"""
         if account_id in self.clients:
@@ -100,15 +102,16 @@ class TelegramManager:
                 pass
 
         try:
-            client = TelegramClient(
-                StringSession(session_string),
-                api_id,
-                api_hash,
-            )
+            if session_kind == 'tdesktop':
+                from opentele2.tl import TelegramClient as DesktopClient
+                from opentele2.api import API
+                client = DesktopClient(StringSession(session_string), api=API.TelegramDesktop)
+            else:
+                client = TelegramClient(StringSession(session_string), api_id, api_hash)
             await client.connect()
 
             if not await client.is_user_authorized():
-                logger.warning(f'账号 {phone} 未授权，跳过启动')
+                logger.warning(f'Аккаунт {phone} не авторизован')
                 with self.app.app_context():
                     from models import db, Account
                     acc = Account.query.get(account_id)
@@ -123,10 +126,10 @@ class TelegramManager:
                 await self._handle_incoming_message(account_id, client, event)
 
             self.clients[account_id] = client
-            logger.info(f'账号 {phone} 客户端已启动')
+            logger.info(f'Аккаунт {phone} подключён')
 
         except Exception as e:
-            logger.error(f'启动账号 {phone} 客户端失败: {e}')
+            logger.error(f'Не удалось подключить аккаунт {phone}: {e}')
             with self.app.app_context():
                 from models import db, Account
                 acc = Account.query.get(account_id)
@@ -175,7 +178,7 @@ class TelegramManager:
                                  is_reply_to_me=is_reply_to_me, is_mentioned=is_mentioned)
 
         except Exception as e:
-            logger.error(f'处理消息时出错: {e}')
+            logger.error(f'Ошибка обработки сообщения: {e}')
 
     async def reload_account(self, account_id: int):
         """重新加载指定账号（Web 端授权后调用）"""
@@ -184,7 +187,7 @@ class TelegramManager:
             acc = Account.query.get(account_id)
             if acc and acc.is_active and acc.status == 'authorized' and acc.session_string:
                 await self._start_client(
-                    acc.id, acc.phone, acc.api_id, acc.api_hash, acc.session_string
+                    acc.id, acc.phone, acc.api_id, acc.api_hash, acc.session_string, acc.session_kind
                 )
 
     async def disconnect_account(self, account_id: int):
@@ -195,7 +198,7 @@ class TelegramManager:
             except Exception:
                 pass
             del self.clients[account_id]
-            logger.info(f'账号 {account_id} 已断开')
+            logger.info(f'Аккаунт {account_id} отключён')
 
     # ------------------------------------------------------------------
     # 身份验证（供 Web 端调用）
@@ -210,7 +213,7 @@ class TelegramManager:
             'client': client,
             'phone_code_hash': result.phone_code_hash,
         }
-        logger.info(f'验证码已发送至 {phone}')
+        logger.info(f'Код отправлен на {phone}')
         return result
 
     async def sign_in(self, phone: str, code: str, password: str = None) -> str:
@@ -222,7 +225,7 @@ class TelegramManager:
 
         auth = self._pending_auth.get(phone)
         if not auth:
-            raise ValueError(f'未找到 {phone} 的待验证登录，请先发送验证码')
+            raise ValueError(f'Сначала запросите код для {phone}')
 
         client: TelegramClient = auth['client']
         try:
@@ -231,15 +234,15 @@ class TelegramManager:
             if password:
                 await client.sign_in(password=password)
             else:
-                raise ValueError('该账号开启了两步验证，请同时填写密码')
+                raise ValueError('Введите пароль двухэтапной аутентификации')
 
         session_string = client.session.save()
         del self._pending_auth[phone]
-        logger.info(f'账号 {phone} 登录成功')
+        logger.info(f'Выполнен вход в аккаунт {phone}')
         return session_string
 
     # ------------------------------------------------------------------
-    # 定时任务
+    # Задача по расписанию
     # ------------------------------------------------------------------
 
     async def _reload_scheduled_tasks(self):
@@ -260,6 +263,11 @@ class TelegramManager:
 
                     existing_job = self.scheduler.get_job(job_id)
                     if existing_job:
+                        self.scheduler.modify_job(job_id, args=[
+                            task.account_id, task.group_id, task.message, task.topic_id,
+                            task.random_delay_min or 0, task.random_delay_max or 0,
+                            task.id, task.interval_minutes or 0, task.image,
+                        ])
                         # 将 APScheduler 当前的下次运行时间同步回数据库（每分钟触发一次）
                         if existing_job.next_run_time:
                             nrt = existing_job.next_run_time
@@ -272,7 +280,8 @@ class TelegramManager:
                     # ---- 任务不存在（首次启动或重启后重建） ----
                     now = datetime.utcnow()
                     args = [task.account_id, task.group_id, task.message, task.topic_id,
-                            task.random_delay_min or 0, task.random_delay_max or 0]
+                            task.random_delay_min or 0, task.random_delay_max or 0,
+                            task.id, task.interval_minutes or 0, task.image]
 
                     if task.task_type == 'interval' and task.interval_minutes:
                         job_kwargs = dict(
@@ -285,13 +294,13 @@ class TelegramManager:
                         if task.next_run_at and task.next_run_at > now:
                             job_kwargs['start_date'] = task.next_run_at
                             logger.info(
-                                f'断点恢复间隔任务 task_{task.id}，'
-                                f'将于 {task.next_run_at} 继续执行'
+                                f'Восстановлена задача task_{task.id},'
+                                f'следующий запуск: {task.next_run_at}'
                             )
                         else:
                             logger.info(
-                                f'已注册间隔任务 task_{task.id}，'
-                                f'每 {task.interval_minutes} 分钟发送一次'
+                                f'Зарегистрирована задача task_{task.id},'
+                                f'Каждые {task.interval_minutes} мин.'
                             )
                         self.scheduler.add_job(
                             self._send_scheduled_message,
@@ -316,7 +325,7 @@ class TelegramManager:
                                 replace_existing=True,
                             )
                             logger.info(
-                                f'已注册 cron 任务 task_{task.id}: {task.cron_expression}'
+                                f'Зарегистрирована задача cron task_{task.id}: {task.cron_expression}'
                             )
 
                 if needs_commit:
@@ -328,12 +337,12 @@ class TelegramManager:
                         self.scheduler.remove_job(job.id)
 
         except Exception as e:
-            logger.error(f'重新加载定时任务失败: {e}')
+            logger.error(f'Ошибка обновления задач: {e}')
 
         self._refresh_trigger_modes()
 
     async def remove_task_job(self, task_id: int):
-        """移除指定定时任务的调度（供 Web 端调用）"""
+        """移除指定Задача по расписанию的调度（供 Web 端调用）"""
         job_id = f'task_{task_id}'
         if self.scheduler and self.scheduler.get_job(job_id):
             self.scheduler.remove_job(job_id)
@@ -341,24 +350,24 @@ class TelegramManager:
     async def _send_scheduled_message(
         self, account_id: int, group_id: str, message: str, topic_id: int = None,
         random_delay_min: int = 0, random_delay_max: int = 0,
-        task_id: int = None, interval_minutes: int = 0
+        task_id: int = None, interval_minutes: int = 0, image: str = None
     ):
-        """执行定时发送，可附加随机延迟，并记录 last_run_at 用于断点续时"""
+        """执行定时发送，可附加случайная задержка，并记录 last_run_at 用于断点续时"""
         import random
         if random_delay_min > 0 and random_delay_max >= random_delay_min:
             delay = random.randint(random_delay_min, random_delay_max)
-            logger.info(f'定时任务随机延迟 {delay} 秒后发送至群 {group_id}')
+            logger.info(f'Задержка {delay} с перед отправкой в {group_id}')
             await asyncio.sleep(delay)
         client = self.clients.get(account_id)
         if client is None:
-            logger.warning(f'定时任务：账号 {account_id} 未连接，跳过')
+            logger.warning(f'Аккаунт {account_id} не подключён: задача пропущена')
             return
         try:
             send_kwargs = {}
             if topic_id:
                 send_kwargs['reply_to'] = topic_id
-            await client.send_message(int(group_id), message, **send_kwargs)
-            logger.info(f'定时消息已发送至群 {group_id}')
+            await send_content(client, int(group_id), message, image, app=self.app, **send_kwargs)
+            logger.info(f'Сообщение отправлено в {group_id}')
             with self.app.app_context():
                 from models import db, MessageLog, ScheduledTask
                 # 记录本次实际执行时间，供下次重启断点续时使用
@@ -376,7 +385,7 @@ class TelegramManager:
                 db.session.add(log)
                 db.session.commit()
         except Exception as e:
-            logger.error(f'定时消息发送失败: {e}')
+            logger.error(f'Ошибка отправки сообщения по расписанию: {e}')
 
     async def _check_pending_replies(self):
         """轮询检查到期的待发回复，保证同一目标按时序发送，失败自动重试"""
@@ -410,7 +419,7 @@ class TelegramManager:
                         send_kwargs = {}
                         if reply.topic_id:
                             send_kwargs['reply_to'] = reply.topic_id
-                        await client.send_message(int(reply.group_id), reply.message, **send_kwargs)
+                        await send_content(client, int(reply.group_id), reply.message, reply.image, **send_kwargs)
                         reply.is_sent = True
                         reply.sent_at = datetime.utcnow()
                         last_sent_to[target_key] = reply.sent_at
@@ -423,21 +432,21 @@ class TelegramManager:
                         )
                         db.session.add(log)
                         db.session.commit()
-                        logger.info(f'待发回复已发送至群 {reply.group_id}')
+                        logger.info(f'Отложенный ответ отправлен в {reply.group_id}')
                     except Exception as e:
                         # 发送失败：将该消息重新推迟 10 秒入队，等待下次重试
-                        logger.error(f'发送待发回复失败: {e}，已重新入队 10 秒后重试')
+                        logger.error(f'Ошибка отправки отложенного ответа: {e}. Повтор через 10 секунд')
                         reply.scheduled_at = datetime.utcnow() + timedelta(seconds=10)
                         err_log = MessageLog(
                             account_id=reply.account_id,
                             group_id=reply.group_id,
                             log_type='error',
-                            content=f'发送失败，已重新入队 10 秒后重试: {e}',
+                            content=f'Ошибка отправки. Повтор через 10 секунд: {e}',
                         )
                         db.session.add(err_log)
                         db.session.commit()
         except Exception as e:
-            logger.error(f'检查待发回复时出错: {e}')
+            logger.error(f'Ошибка обработки очереди ответов: {e}')
 
     # ------------------------------------------------------------------
     # 触发模式缓存
@@ -458,7 +467,7 @@ class TelegramManager:
                         result.setdefault(kw.account_id, set()).add(mode)
                 self._trigger_modes = result
         except Exception as e:
-            logger.error(f'刷新触发模式缓存失败: {e}')
+            logger.error(f'Ошибка обновления правил: {e}')
 
     # ------------------------------------------------------------------
     # 工具方法
@@ -467,7 +476,7 @@ class TelegramManager:
     def submit(self, coro):
         """将协程提交到 Telegram 事件循环（供同步的 Flask 代码调用）"""
         if self.loop is None:
-            raise RuntimeError('事件循环尚未启动')
+            raise RuntimeError('Telegram ещё не запущен')
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     @property

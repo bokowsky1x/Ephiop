@@ -54,11 +54,11 @@ def add():
     topic_id = int(topic_id_raw) if topic_id_raw.lstrip('-').isdigit() else None
 
     if not entity_id:
-        flash('目标 ID 为必填项', 'danger')
+        flash('Укажите ID получателя', 'danger')
         return redirect(url_for('targets.index'))
 
     upsert_target(entity_id, name, entity_type, note, topic_id)
-    flash(f'已保存目标 {name or entity_id}', 'success')
+    flash(f'Получатель сохранён: {name or entity_id}', 'success')
     return redirect(url_for('targets.index'))
 
 
@@ -68,5 +68,5 @@ def delete(target_id):
     name = t.name or t.entity_id
     db.session.delete(t)
     db.session.commit()
-    flash(f'已删除目标 {name}', 'success')
+    flash(f'Получатель удалён: {name}', 'success')
     return redirect(url_for('targets.index'))

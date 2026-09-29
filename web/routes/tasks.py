@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
 from models import db, Account, ScheduledTask
+from media import save_image
 
 tasks_bp = Blueprint('tasks', __name__)
 
@@ -25,14 +26,14 @@ def add():
     random_delay_min = request.form.get('random_delay_min', '0').strip()
     random_delay_max = request.form.get('random_delay_max', '0').strip()
 
-    if not all([account_id, group_id, message]):
-        flash('账号、目标 ID 和消息内容为必填项', 'danger')
+    if not all([account_id, group_id]) or not (message or request.files.get('image')):
+        flash('Укажите аккаунт, ID получателя и текст или изображение', 'danger')
         return redirect(url_for('tasks.index'))
 
     try:
         account_id = int(account_id)
     except ValueError:
-        flash('无效的账号', 'danger')
+        flash('Некорректный аккаунт', 'danger')
         return redirect(url_for('tasks.index'))
 
     task = ScheduledTask(
@@ -48,15 +49,20 @@ def add():
 
     if task_type == 'interval':
         if not interval_minutes or not interval_minutes.isdigit():
-            flash('请填写有效的间隔分钟数', 'danger')
+            flash('Укажите положительный интервал в минутах', 'danger')
             return redirect(url_for('tasks.index'))
         task.interval_minutes = int(interval_minutes)
     elif task_type == 'cron':
         if not cron_expression or len(cron_expression.split()) != 5:
-            flash('Cron 表达式格式错误（需要 5 个字段，如 "0 9 * * *"）', 'danger')
+            flash('Некорректное выражение Cron: нужно 5 полей, например "0 9 * * *"', 'danger')
             return redirect(url_for('tasks.index'))
         task.cron_expression = cron_expression
 
+    try:
+        task.image = save_image()
+    except ValueError as exc:
+        flash(str(exc), 'danger')
+        return redirect(url_for('tasks.index'))
     db.session.add(task)
     db.session.commit()
 
@@ -69,7 +75,7 @@ def add():
     if manager:
         manager.submit(manager._reload_scheduled_tasks())
 
-    flash('定时任务已添加', 'success')
+    flash('Задача добавлена', 'success')
     return redirect(url_for('tasks.index'))
 
 
@@ -83,14 +89,14 @@ def edit(task_id):
         group_id = request.form.get('group_id', '').strip()
         message = request.form.get('message', '').strip()
 
-        if not all([account_id, group_id, message]):
-            flash('账号、目标 ID 和消息内容为必填项', 'danger')
+        if not all([account_id, group_id]) or not (message or request.files.get('image') or (task.image and request.form.get('remove_image') != 'on')):
+            flash('Укажите аккаунт, ID получателя и текст или изображение', 'danger')
             return render_template('task_edit.html', task=task, accounts=accounts)
 
         try:
             task.account_id = int(account_id)
         except ValueError:
-            flash('无效的账号', 'danger')
+            flash('Некорректный аккаунт', 'danger')
             return render_template('task_edit.html', task=task, accounts=accounts)
 
         task.group_id = group_id
@@ -107,16 +113,22 @@ def edit(task_id):
         if task.task_type == 'interval':
             interval_minutes = request.form.get('interval_minutes', '').strip()
             if not interval_minutes or not interval_minutes.isdigit():
-                flash('请填写有效的间隔分钟数', 'danger')
+                flash('Укажите положительный интервал в минутах', 'danger')
                 return render_template('task_edit.html', task=task, accounts=accounts)
             task.interval_minutes = int(interval_minutes)
         elif task.task_type == 'cron':
             cron_expression = request.form.get('cron_expression', '').strip()
             if not cron_expression or len(cron_expression.split()) != 5:
-                flash('Cron 表达式格式错误（需要 5 个字段，如 "0 9 * * *"）', 'danger')
+                flash('Некорректное выражение Cron: нужно 5 полей, например "0 9 * * *"', 'danger')
                 return render_template('task_edit.html', task=task, accounts=accounts)
             task.cron_expression = cron_expression
 
+        try:
+            task.image = save_image(task.image)
+        except ValueError as exc:
+            db.session.rollback()
+            flash(str(exc), 'danger')
+            return render_template('task_edit.html', task=task, accounts=accounts)
         db.session.commit()
 
         # 自动同步目标到目标列表
@@ -128,7 +140,7 @@ def edit(task_id):
         if manager:
             manager.submit(manager._reload_scheduled_tasks())
 
-        flash('定时任务已更新', 'success')
+        flash('Задача обновлена', 'success')
         return redirect(url_for('tasks.index'))
 
     return render_template('task_edit.html', task=task, accounts=accounts)
@@ -147,8 +159,8 @@ def toggle(task_id):
         else:
             manager.submit(manager.remove_task_job(task.id))
 
-    status = '启用' if task.is_active else '停用'
-    flash(f'任务已{status}', 'success')
+    status = 'Включено' if task.is_active else 'Отключено'
+    flash(f'Задача: {status}', 'success')
     return redirect(url_for('tasks.index'))
 
 
@@ -160,5 +172,5 @@ def delete(task_id):
         manager.submit(manager.remove_task_job(task.id))
     db.session.delete(task)
     db.session.commit()
-    flash('定时任务已删除', 'success')
+    flash('Задача удалена', 'success')
     return redirect(url_for('tasks.index'))

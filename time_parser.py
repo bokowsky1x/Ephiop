@@ -16,10 +16,10 @@ def parse_chinese_time(text: str) -> Optional[int]:
     total = 0
     found = False
 
-    day_match = re.search(r'(\d+)\s*天', text)
-    hour_match = re.search(r'(\d+)\s*小时', text)
-    min_match = re.search(r'(\d+)\s*分(?:钟)?', text)
-    sec_match = re.search(r'(\d+)\s*秒', text)
+    day_match = re.search(r'(\d+)\s*(?:天|д(?:ень|ня|ней)?\b|сут(?:ки|ок)?\b)', text, re.I)
+    hour_match = re.search(r'(\d+)\s*(?:小时|ч(?:ас(?:а|ов)?)?\b)', text, re.I)
+    min_match = re.search(r'(\d+)\s*(?:分(?:钟)?|мин(?:ут(?:а|ы|у)?)?\b|м\b)', text, re.I)
+    sec_match = re.search(r'(\d+)\s*(?:秒|сек(?:унд(?:а|ы|у)?)?\b|с\b)', text, re.I)
 
     if day_match:
         total += int(day_match.group(1)) * 86400
@@ -40,16 +40,16 @@ def parse_chinese_time(text: str) -> Optional[int]:
 def format_seconds(seconds: int) -> str:
     """将秒数格式化为人类可读字符串"""
     if seconds <= 0:
-        return '0秒'
+        return '0 с'
     parts = []
     if seconds >= 3600:
         h = seconds // 3600
-        parts.append(f'{h}小时')
+        parts.append(f'{h} ч')
         seconds %= 3600
     if seconds >= 60:
         m = seconds // 60
-        parts.append(f'{m}分钟')
+        parts.append(f'{m} мин')
         seconds %= 60
     if seconds > 0:
-        parts.append(f'{seconds}秒')
-    return ''.join(parts)
+        parts.append(f'{seconds} с')
+    return ' '.join(parts)

@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
-{% block title %}控制台 - TG Bot{% endblock %}
-{% block page_title %}控制台{% endblock %}
+{% block title %}Обзор - Ephiop{% endblock %}
+{% block page_title %}Обзор{% endblock %}
 
 {% block content %}
 <!-- 统计卡片 -->
@@ -12,7 +12,7 @@
           <i class="bi bi-people-fill fs-4 text-primary"></i>
         </div>
         <div>
-          <div class="text-muted small">总账号</div>
+          <div class="text-muted small">Всего аккаунтов</div>
           <div class="fs-3 fw-bold">{{ total_accounts }}</div>
         </div>
       </div>
@@ -25,7 +25,7 @@
           <i class="bi bi-wifi fs-4 text-success"></i>
         </div>
         <div>
-          <div class="text-muted small">已连接</div>
+          <div class="text-muted small">Подключено</div>
           <div class="fs-3 fw-bold">{{ connected }} / {{ active_accounts }}</div>
         </div>
       </div>
@@ -38,7 +38,7 @@
           <i class="bi bi-chat-quote-fill fs-4" style="color:#6610f2"></i>
         </div>
         <div>
-          <div class="text-muted small">关键词规则</div>
+          <div class="text-muted small">Правило автоответа</div>
           <div class="fs-3 fw-bold">{{ total_keywords }}</div>
         </div>
       </div>
@@ -51,7 +51,7 @@
           <i class="bi bi-clock-history fs-4 text-warning"></i>
         </div>
         <div>
-          <div class="text-muted small">待发回复</div>
+          <div class="text-muted small">Ожидающие ответы</div>
           <div class="fs-3 fw-bold">{{ pending_replies }}</div>
         </div>
       </div>
@@ -59,21 +59,21 @@
   </div>
 </div>
 
-<!-- 最近日志 -->
+<!-- Последние записи -->
 <div class="card">
   <div class="card-header bg-white d-flex justify-content-between align-items-center">
-    <span class="fw-semibold"><i class="bi bi-activity me-1"></i>最近活动</span>
-    <a href="{{ url_for('logs.index') }}" class="btn btn-sm btn-outline-secondary">查看全部</a>
+    <span class="fw-semibold"><i class="bi bi-activity me-1"></i>Последние события</span>
+    <a href="{{ url_for('logs.index') }}" class="btn btn-sm btn-outline-secondary">Все записи</a>
   </div>
   <div class="card-body p-0">
     {% if recent_logs %}
     <table class="table table-hover mb-0">
       <thead class="table-light">
         <tr>
-          <th>时间</th>
-          <th>类型</th>
-          <th>群组</th>
-          <th>内容</th>
+          <th>Время</th>
+          <th>Тип</th>
+          <th>Группа</th>
+          <th>Содержимое</th>
         </tr>
       </thead>
       <tbody>
@@ -82,13 +82,13 @@
           <td class="text-muted small text-nowrap">{{ log.created_at.strftime('%m-%d %H:%M:%S') }}</td>
           <td>
             {% if log.log_type == 'keyword_matched' %}
-              <span class="badge bg-primary">关键词匹配</span>
+              <span class="badge bg-primary">Совпадение ключевых слов</span>
             {% elif log.log_type == 'auto_replied' %}
-              <span class="badge bg-success">自动回复</span>
+              <span class="badge bg-success">Автоответ</span>
             {% elif log.log_type == 'scheduled_sent' %}
-              <span class="badge bg-purple" style="background:#6610f2">定时发送</span>
+              <span class="badge bg-purple" style="background:#6610f2">Отправка по расписанию</span>
             {% elif log.log_type == 'error' %}
-              <span class="badge bg-danger">错误</span>
+              <span class="badge bg-danger">Ошибка</span>
             {% else %}
               <span class="badge bg-secondary">{{ log.log_type }}</span>
             {% endif %}
@@ -102,7 +102,7 @@
     {% else %}
     <div class="text-center text-muted py-5">
       <i class="bi bi-inbox fs-2 d-block mb-2"></i>
-      暂无活动记录
+      Событий пока нет
     </div>
     {% endif %}
   </div>
