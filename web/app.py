@@ -49,6 +49,8 @@ def create_app(telegram_manager=None):
     app.register_blueprint(accounts_bp, url_prefix='/accounts')
     from web.routes.profile import profile_bp
     app.register_blueprint(profile_bp, url_prefix='/accounts')
+    from web.routes.join import join_bp
+    app.register_blueprint(join_bp, url_prefix='/accounts')
     app.register_blueprint(keywords_bp, url_prefix='/keywords')
     app.register_blueprint(tasks_bp, url_prefix='/tasks')
     app.register_blueprint(logs_bp, url_prefix='/logs')

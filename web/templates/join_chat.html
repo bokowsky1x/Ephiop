@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block title %}Вступить в чат - Ephiop{% endblock %}
+{% block page_title %}Вступить в чат{% endblock %}
+{% block content %}
+<form id="join-form" style="max-width:760px">
+  <label class="form-label" for="chat-link">Ссылка на чат или @username</label>
+  <input id="chat-link" class="form-control mb-3" required maxlength="500" placeholder="https://t.me/chat или https://t.me/+приглашение">
+  <label class="form-label" for="join-account">Аккаунт</label>
+  <select id="join-account" class="form-select mb-3" required>
+    <option value="">Выберите аккаунт</option>
+    {% if accounts %}<option value="all">Все аккаунты ({{ accounts|length }})</option>{% endif %}
+    {% for acc in accounts %}<option value="{{ acc.id }}">{{ acc.name }}{% if not acc.is_active %} (отключён){% elif acc.status != 'authorized' %} (не авторизован){% endif %}</option>{% endfor %}
+  </select>
+  <button id="join-submit" class="btn btn-primary" {% if not accounts %}disabled{% endif %}><i class="bi bi-box-arrow-in-right"></i> Вступить в чат</button>
+  <span id="join-progress" class="ms-2" role="status" aria-live="polite"></span>
+</form>
+<div class="table-responsive mt-4">
+  <table class="table align-middle"><thead><tr><th>Аккаунт</th><th>Результат</th><th>ID чата</th></tr></thead><tbody id="join-results"></tbody></table>
+</div>
+<a class="btn btn-outline-secondary" href="{{ url_for('tasks.index') }}"><i class="bi bi-clock"></i> Задачи по расписанию</a>
+{% endblock %}
+{% block scripts %}
+<script>
+const joinAccounts = {{ accounts|map(attribute='id')|list|tojson }};
+const csrfToken = {{ csrf_token|tojson }};
+const form = document.getElementById('join-form');
+let running = false;
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (running) return;
+  const select = document.getElementById('join-account');
+  const ids = select.value === 'all' ? joinAccounts : [Number(select.value)];
+  const link = document.getElementById('chat-link').value.trim();
+  if (!link || !select.value) return;
+  const rows = document.getElementById('join-results');
+  rows.replaceChildren();
+  running = true;
+  [...form.elements].forEach(element => element.disabled = true);
+  try {
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      document.getElementById('join-progress').textContent = `${i + 1} / ${ids.length}`;
+      const row = rows.insertRow();
+      row.insertCell().textContent = select.querySelector(`option[value="${id}"]`).textContent;
+      const status = row.insertCell();
+      const chat = row.insertCell();
+      status.textContent = 'Выполняется…';
+      try {
+        const response = await fetch(`/accounts/${id}/join`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({link, csrf_token:csrfToken})});
+        if (!response.ok) throw new Error('Запрос отклонён. Обновите страницу');
+        const result = await response.json();
+        status.textContent = result.message;
+        status.className = result.status === 'error' ? 'text-danger' : result.status === 'pending' ? 'text-warning' : 'text-success';
+        if (result.chat_id) {
+          const code = document.createElement('code');
+          code.textContent = result.chat_id;
+          chat.append(code);
+          const button = document.createElement('button');
+          button.className = 'btn btn-sm btn-outline-secondary ms-2';
+          button.title = 'Скопировать ID';
+          button.setAttribute('aria-label', 'Скопировать ID');
+          button.innerHTML = '<i class="bi bi-copy"></i>';
+          button.onclick = async () => { try { await navigator.clipboard.writeText(result.chat_id); button.title = 'Скопировано'; } catch { button.title = 'Выделите и скопируйте ID'; } };
+          chat.append(button);
+        }
+      } catch (error) {
+        status.textContent = 'Ответ не получен. Проверьте членство перед повтором';
+        status.className = 'text-danger';
+      }
+    }
+  } finally {
+    running = false;
+    [...form.elements].forEach(element => element.disabled = false);
+    document.getElementById('join-progress').textContent = 'Готово';
+  }
+});
+window.addEventListener('beforeunload', event => { if (running) { event.preventDefault(); event.returnValue = ''; } });
+</script>
+{% endblock %}

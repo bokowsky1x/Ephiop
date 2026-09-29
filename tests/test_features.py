@@ -195,6 +195,55 @@ class FeaturesTest(unittest.TestCase):
         self.assertEqual(parse_chinese_time('1 д 2 ч 3 мин'), 93780)
         self.assertEqual(parse_chinese_time('1小时48秒'), 3648)
 
+    def test_join_links(self):
+        from web.routes.join import parse_invite
+        for link in ('@testchat', 'https://t.me/testchat', 't.me/testchat'):
+            self.assertEqual(parse_invite(link), ('public', 'testchat'))
+        for link in ('https://t.me/+Abc_123', 't.me/joinchat/Abc_123'):
+            self.assertEqual(parse_invite(link), ('invite', 'Abc_123'))
+        for link in ('-100123456', 'https://evil.example/testchat', 'https://t.me/chatname/123', 'https://t.me/+'):
+            with self.assertRaises(ValueError):
+                parse_invite(link)
+
+    def test_join_public_and_private(self):
+        from web.routes.join import join_chat
+        from telethon import types, functions
+        chat = types.Channel(id=123, title='Чат', photo=types.ChatPhotoEmpty(), date=datetime.now(), megagroup=True, left=True)
+        client = AsyncMock()
+        client.get_entity.return_value = chat
+        result = asyncio.run(join_chat(client, 'public', 'testchat'))
+        self.assertEqual(result['chat_id'], '-1000000000123')
+        self.assertIsInstance(client.call_args.args[0], functions.channels.JoinChannelRequest)
+        chat.left = False
+        client.reset_mock()
+        self.assertEqual(asyncio.run(join_chat(client, 'public', 'testchat'))['status'], 'already')
+        client.assert_not_awaited()
+        client.return_value = types.ChatInviteAlready(chat)
+        self.assertEqual(asyncio.run(join_chat(client, 'invite', 'code'))['status'], 'already')
+
+    def test_join_pending_and_limits(self):
+        from web.routes.join import join_chat, join_error
+        from telethon import errors
+        client = AsyncMock(side_effect=errors.InviteRequestSentError(request=None))
+        self.assertEqual(asyncio.run(join_chat(client, 'invite', 'code'))['status'], 'pending')
+        self.assertIn('42', join_error(errors.FloodWaitError(request=None, capture=42)))
+
+    def test_join_route_csrf_offline_and_saved_target(self):
+        from models import TargetEntity
+        url = f'/accounts/{self.account_id}/join'
+        self.assertEqual(self.client.post(url, json={'link':'@testchat'}).status_code, 400)
+        self.assertEqual(self.client.get('/accounts/join').status_code, 200)
+        with self.client.session_transaction() as state:
+            token = state['join_csrf']
+        payload = dict(link='@testchat', csrf_token=token)
+        self.assertEqual(self.client.post(url, json=payload).json['status'], 'error')
+        def execute(coro):
+            coro.close()
+            return dict(status='joined', message='Вступил', chat_id='-100123', title='Чат', kind='supergroup')
+        with patch('web.routes.join.connected_client'), patch('web.routes.join.run', side_effect=execute):
+            self.assertEqual(self.client.post(url, json=payload).json['status'], 'joined')
+        self.assertEqual(TargetEntity.query.one().entity_id, '-100123')
+
     def test_profile_updates_and_validation(self):
         from web.routes.profile import update
         from telethon import functions
