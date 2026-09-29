@@ -12,7 +12,7 @@ from zipfile import ZipFile
 from PIL import Image
 from config import Config
 from media import send_content
-from models import Account, Keyword, PendingReply, ScheduledTask, db, set_setting
+from models import Account, Keyword, PendingReply, ScheduledTask, TaskImage, db, set_setting
 from message_handler import check_keywords, _smart_dedup
 from telegram_manager import TelegramManager
 from tdata_import import extract_tdata, import_tdata
@@ -54,6 +54,8 @@ class FeaturesTest(unittest.TestCase):
         self.account_id = account.id
 
     def tearDown(self):
+        if self.manager.scheduler and self.manager.scheduler.running:
+            self.manager.scheduler.shutdown(wait=False)
         db.session.remove()
         db.engine.dispose()
         self.ctx.pop()
@@ -152,6 +154,86 @@ class FeaturesTest(unittest.TestCase):
         self.manager.clients[self.account_id] = client
         asyncio.run(self.manager._send_scheduled_message(self.account_id, '123', 'Подпись', topic_id=9, image='test.jpg'))
         self.assertEqual(client.send_file.await_args.kwargs['reply_to'], 9)
+
+    def start_test_scheduler(self):
+        from apscheduler.schedulers.background import BackgroundScheduler
+        self.manager.scheduler = BackgroundScheduler(timezone='UTC')
+        self.manager.scheduler.start(paused=True)
+        self.manager.clients[self.account_id] = SimpleNamespace(send_file=AsyncMock(), send_message=AsyncMock())
+
+    def test_interval_edit_replaces_trigger_and_immediate_start(self):
+        self.task(send_immediately='on')
+        task = ScheduledTask.query.one()
+        self.start_test_scheduler()
+        asyncio.run(self.manager._reload_scheduled_tasks())
+        job = self.manager.scheduler.get_job(f'task_{task.id}')
+        self.assertEqual(job.trigger.interval.total_seconds(), 300)
+        self.assertLess(abs(job.next_run_time.timestamp() - datetime.now().timestamp()), 3)
+        db.session.expire_all()
+        self.client.post(f'/tasks/{task.id}/edit', data=dict(account_id=str(self.account_id), group_id='123', message='test', task_type='interval', interval_minutes='1'))
+        asyncio.run(self.manager._reload_scheduled_tasks())
+        job = self.manager.scheduler.get_job(f'task_{task.id}')
+        self.assertEqual(job.trigger.interval.total_seconds(), 60)
+        self.assertGreater(job.next_run_time.timestamp() - datetime.now().timestamp(), 55)
+
+    def test_pool_consumed_once_and_stops(self):
+        from task_scheduler import execute_task
+        self.task()
+        task = ScheduledTask.query.one()
+        task.images.extend([TaskImage(filename=name, digest=name) for name in ('a.jpg', 'b.jpg')])
+        db.session.commit()
+        task_id, revision = task.id, task.revision
+        self.start_test_scheduler()
+        with patch('task_scheduler.send_content', new_callable=AsyncMock) as send:
+            for _ in range(3):
+                asyncio.run(execute_task(self.manager, task_id, revision))
+            self.assertEqual([call.args[3] for call in send.await_args_list], ['a.jpg', 'b.jpg'])
+        db.session.expire_all()
+        task = db.session.get(ScheduledTask, task_id)
+        self.assertFalse(task.is_active)
+        self.assertIsNotNone(task.completed_at)
+        self.assertEqual([item.state for item in task.images], ['sent', 'sent'])
+
+    def test_once_delivery_and_uncertain_failure_do_not_repeat(self):
+        from task_scheduler import execute_task
+        self.task(task_type='once')
+        task = ScheduledTask.query.one()
+        task_id, revision = task.id, task.revision
+        self.start_test_scheduler()
+        asyncio.run(self.manager._reload_scheduled_tasks())
+        from apscheduler.triggers.date import DateTrigger
+        self.assertIsInstance(self.manager.scheduler.get_job(f'task_{task_id}').trigger, DateTrigger)
+        with patch('task_scheduler.send_content', new_callable=AsyncMock) as send:
+            asyncio.run(execute_task(self.manager, task_id, revision))
+            asyncio.run(execute_task(self.manager, task_id, revision))
+            send.assert_awaited_once()
+        db.session.expire_all()
+        self.assertFalse(db.session.get(ScheduledTask, task_id).is_active)
+        self.task(task_type='once')
+        task = ScheduledTask.query.order_by(ScheduledTask.id.desc()).first()
+        task_id, revision = task.id, task.revision
+        with patch('task_scheduler.send_content', new_callable=AsyncMock, side_effect=RuntimeError('offline')) as send:
+            with self.assertRaises(RuntimeError):
+                asyncio.run(execute_task(self.manager, task_id, revision))
+            asyncio.run(execute_task(self.manager, task_id, revision))
+            send.assert_awaited_once()
+        db.session.expire_all()
+        self.assertEqual(db.session.get(ScheduledTask, task_id).delivery_state, 'uncertain')
+
+    def test_pool_upload_dedup_and_interrupted_restart(self):
+        self.task(pool_images=[picture(), picture()], message='')
+        task = ScheduledTask.query.one()
+        self.assertEqual(len(task.images), 1)
+        self.assertEqual(self.client.get(f'/tasks/{task.id}/edit').status_code, 200)
+        task.delivery_state = 'sending'
+        task.images[0].state = 'sending'
+        db.session.commit()
+        self.start_test_scheduler()
+        asyncio.run(self.manager._reload_scheduled_tasks())
+        db.session.expire_all()
+        self.assertFalse(task.is_active)
+        self.assertEqual(task.images[0].state, 'uncertain')
+        self.assertIsNone(self.manager.scheduler.get_job(f'task_{task.id}'))
 
     def test_dedup_preserves_different_images(self):
         set_setting('smart_dedup_enabled', 'true')
@@ -314,6 +396,8 @@ class FeaturesTest(unittest.TestCase):
                 for table in ('keywords', 'scheduled_tasks', 'pending_replies'):
                     db.session.execute(sa.text(f'ALTER TABLE {table} DROP COLUMN image'))
                 db.session.execute(sa.text('ALTER TABLE accounts DROP COLUMN session_kind'))
+                for column in ('once_at', 'send_immediately', 'revision', 'delivery_state', 'completed_at', 'last_error'):
+                    db.session.execute(sa.text(f'ALTER TABLE scheduled_tasks DROP COLUMN {column}'))
                 db.session.commit()
                 db.engine.dispose()
             for _ in range(2):

@@ -1,0 +1,30 @@
+{% set editing = task is defined %}
+{% set mode = task.task_type if editing else 'interval' %}
+<div class="mb-3">
+  <label class="form-label" for="task-type">Тип задачи</label>
+  <select id="task-type" name="task_type" class="form-select" onchange="switchType()">
+    <option value="interval" {{ 'selected' if mode == 'interval' }}>По интервалу</option>
+    <option value="cron" {{ 'selected' if mode == 'cron' }}>Расписание Cron (UTC)</option>
+    <option value="once" {{ 'selected' if mode == 'once' }}>Разовая отправка</option>
+  </select>
+</div>
+<div id="interval-field" class="mb-3" style="display:{{ 'block' if mode == 'interval' else 'none' }}">
+  <label for="interval-minutes" class="form-label">Интервал, минут</label>
+  <input id="interval-minutes" type="number" name="interval_minutes" class="form-control mb-2" min="1" value="{{ task.interval_minutes or 60 if editing else 60 }}">
+  <label class="form-check-label"><input type="checkbox" class="form-check-input" name="send_immediately" {{ 'checked' if not editing or task.send_immediately }}> Первая отправка сразу</label>
+</div>
+<div id="cron-field" class="mb-3" style="display:{{ 'block' if mode == 'cron' else 'none' }}">
+  <label for="cron-expression" class="form-label">Выражение Cron</label>
+  <input id="cron-expression" name="cron_expression" class="form-control" placeholder="0 9 * * *" value="{{ task.cron_expression or '' if editing else '' }}">
+</div>
+<div id="once-field" class="mb-3" style="display:{{ 'block' if mode == 'once' else 'none' }}">
+  <label for="once-at" class="form-label">Дата и время (UTC; пусто — сейчас)</label>
+  <input id="once-at" type="datetime-local" name="once_at" class="form-control" value="{{ task.once_at.strftime('%Y-%m-%dT%H:%M:%S') if editing and task.once_at else '' }}" step="1">
+</div>
+<div class="mb-3">
+  <label class="form-label">Случайная задержка, секунд</label>
+  <div class="row g-2">
+    <div class="col-6"><label for="delay-min" class="small">Минимум</label><input id="delay-min" class="form-control" type="number" name="random_delay_min" min="0" max="86400" value="{{ task.random_delay_min or 0 if editing else 0 }}"></div>
+    <div class="col-6"><label for="delay-max" class="small">Максимум</label><input id="delay-max" class="form-control" type="number" name="random_delay_max" min="0" max="86400" value="{{ task.random_delay_max or 0 if editing else 0 }}"></div>
+  </div>
+</div>

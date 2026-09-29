@@ -18,6 +18,15 @@ def create_app(telegram_manager=None):
     with app.app_context():
         db.create_all()
         from sqlalchemy import inspect, text
+        task_columns = {column['name'] for column in inspect(db.engine).get_columns('scheduled_tasks')}
+        for name, definition in {
+            'once_at': 'DATETIME', 'send_immediately': 'BOOLEAN DEFAULT 0',
+            'revision': 'INTEGER NOT NULL DEFAULT 0',
+            'delivery_state': "VARCHAR(20) NOT NULL DEFAULT 'ready'",
+            'completed_at': 'DATETIME', 'last_error': "TEXT DEFAULT ''",
+        }.items():
+            if name not in task_columns:
+                db.session.execute(text(f'ALTER TABLE scheduled_tasks ADD COLUMN {name} {definition}'))
         if 'session_kind' not in {column['name'] for column in inspect(db.engine).get_columns('accounts')}:
             db.session.execute(text("ALTER TABLE accounts ADD COLUMN session_kind VARCHAR(20) DEFAULT 'telethon'"))
         for table in ('keywords', 'scheduled_tasks', 'pending_replies'):

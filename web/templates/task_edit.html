@@ -65,49 +65,11 @@
           <div class="mb-3">
             <label class="form-label">Текст сообщения</label>
             <textarea name="message" class="form-control" rows="3">{{ task.message }}</textarea>
-{% with current_image=task.image %}{% include "_image_field.html" %}{% endwith %}
+{% if not task.images %}{% with current_image=task.image %}{% include "_image_field.html" %}{% endwith %}{% endif %}
 
           </div>
-          <div class="mb-3">
-            <label class="form-label">Тип задачи</label>
-            <div class="btn-group w-100" role="group">
-              <input type="radio" class="btn-check" name="task_type" id="type_interval"
-                     value="interval" {{ 'checked' if task.task_type == 'interval' }} onchange="switchType()">
-              <label class="btn btn-outline-primary" for="type_interval">По интервалу</label>
-              <input type="radio" class="btn-check" name="task_type" id="type_cron"
-                     value="cron" {{ 'checked' if task.task_type == 'cron' }} onchange="switchType()">
-              <label class="btn btn-outline-primary" for="type_cron">Выражение Cron</label>
-            </div>
-          </div>
-          <div id="interval-field" class="mb-3" style="display:{{ 'none' if task.task_type == 'cron' else 'block' }}">
-            <label class="form-label">Интервал, минут <span class="text-danger">*</span></label>
-            <div class="input-group">
-              <input type="number" name="interval_minutes" class="form-control"
-                     value="{{ task.interval_minutes or '' }}" min="1">
-              <span class="input-group-text">мин.</span>
-            </div>
-          </div>
-          <div id="random-delay-field" class="mb-3">
-            <label class="form-label">Диапазон задержки (с)</label>
-            <div class="input-group">
-              <span class="input-group-text">Минимум</span>
-              <input type="number" name="random_delay_min" class="form-control"
-                     value="{{ task.random_delay_min or 0 }}" min="0">
-              <span class="input-group-text">Максимум</span>
-              <input type="number" name="random_delay_max" class="form-control"
-                     value="{{ task.random_delay_max or 0 }}" min="0">
-              <span class="input-group-text">с</span>
-            </div>
-            <div class="form-text">Укажите 0 в обоих полях, чтобы отключить задержку.</div>
-          </div>
-          <div id="cron-field" class="mb-3" style="display:{{ 'block' if task.task_type == 'cron' else 'none' }}">
-            <label class="form-label">Выражение Cron <span class="text-danger">*</span></label>
-            <input type="text" name="cron_expression" class="form-control"
-                   value="{{ task.cron_expression or '' }}">
-            <div class="form-text">
-              Минута, час, день, месяц, день недели. Например: <code>0 9 * * *</code> ежедневно в 09:00 (UTC).
-            </div>
-          </div>
+          {% include "_task_pool.html" %}
+          {% include "_task_schedule.html" %}
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary">
               <i class="bi bi-check-circle me-1"></i>Сохранить
@@ -124,9 +86,10 @@
 {% block scripts %}
 <script>
 function switchType() {
-  const isCron = document.getElementById('type_cron').checked;
-  document.getElementById('interval-field').style.display = isCron ? 'none' : 'block';
-  document.getElementById('cron-field').style.display = isCron ? 'block' : 'none';
+  const mode = document.getElementById('task-type').value;
+  ['interval', 'cron', 'once'].forEach(type => {
+    document.getElementById(type + '-field').style.display = mode === type ? 'block' : 'none';
+  });
 }
 
 // -- 目标实体识别 + 话题检测 --

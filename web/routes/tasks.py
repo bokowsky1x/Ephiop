@@ -1,8 +1,120 @@
+from datetime import datetime, timezone
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
-from models import db, Account, ScheduledTask
-from media import save_image
+from apscheduler.triggers.cron import CronTrigger
+
+from models import db, Account, ScheduledTask, TaskImage
+from media import save_image, store_image, image_path
 
 tasks_bp = Blueprint('tasks', __name__)
+
+
+def update_fields(task, new=False):
+    created_files = []
+    try:
+        form = request.form
+        account_id = int(form.get('account_id', ''))
+        account = db.session.get(Account, account_id)
+        if not account or account.status != 'authorized':
+            raise ValueError('Выберите авторизованный аккаунт')
+        group_id = form.get('group_id', '').strip()
+        if not group_id or not group_id.lstrip('-').isdigit():
+            raise ValueError('Укажите числовой ID получателя')
+        task_type = form.get('task_type', 'interval')
+        if task_type not in ('interval', 'cron', 'once'):
+            raise ValueError('Неизвестный тип задачи')
+        interval = None
+        cron = None
+        once_at = None
+        if task_type == 'interval':
+            interval = int(form.get('interval_minutes', '0'))
+            if interval <= 0:
+                raise ValueError('Интервал должен быть больше нуля')
+        elif task_type == 'cron':
+            cron = form.get('cron_expression', '').strip()
+            try:
+                CronTrigger.from_crontab(cron, timezone='UTC')
+            except ValueError:
+                raise ValueError('Некорректное выражение Cron')
+        else:
+            value = form.get('once_at', '').strip()
+            if value:
+                try:
+                    once_at = datetime.fromisoformat(value)
+                    if once_at.tzinfo:
+                        once_at = once_at.astimezone(timezone.utc).replace(tzinfo=None)
+                except ValueError:
+                    raise ValueError('Некорректная дата разовой отправки')
+                if once_at < datetime.utcnow() and (new or once_at != task.once_at):
+                    raise ValueError('Укажите будущее время UTC или оставьте поле пустым для отправки сейчас')
+            else:
+                once_at = task.once_at if not new and task.task_type == 'once' else datetime.utcnow()
+        low = int(form.get('random_delay_min', '0'))
+        high = int(form.get('random_delay_max', '0'))
+        if not 0 <= low <= high <= 86400:
+            raise ValueError('Задержка: от 0 до 86400 секунд, минимум не больше максимума')
+        topic = form.get('topic_id', '').strip()
+        topic_id = int(topic) if topic else None
+        if topic_id is not None and topic_id <= 0:
+            raise ValueError('ID темы должен быть положительным')
+        text = form.get('message', '').strip()
+        uploads = [upload for upload in request.files.getlist('pool_images') if upload.filename]
+        if len(uploads) > 50:
+            raise ValueError('Можно добавить не более 50 изображений за один раз')
+        if uploads and request.files.get('image'):
+            raise ValueError('Выберите одно вложение или пул скриншотов')
+        remove_ids = set(form.getlist('remove_pool_ids'))
+        remaining = [item for item in task.images if item.state == 'pending' and str(item.id) not in remove_ids]
+        pool_mode = bool(task.images or uploads)
+        if pool_mode and len(text) > 1024:
+            raise ValueError('Подпись к изображению не должна превышать 1024 символа')
+        if pool_mode and request.files.get('image'):
+            raise ValueError('В этой задаче используется пул скриншотов')
+        image = None if pool_mode else save_image(task.image)
+        known = {item.digest for item in task.images}
+        additions = []
+        for upload in uploads:
+            filename, digest = store_image(upload)
+            created_files.append(filename)
+            if digest in known:
+                image_path(filename).unlink(missing_ok=True)
+                created_files.remove(filename)
+                continue
+            known.add(digest)
+            additions.append(TaskImage(filename=filename, digest=digest, state='pending'))
+        if new and pool_mode and not additions:
+            raise ValueError('Добавьте хотя бы одно изображение')
+        if not pool_mode and not text and not image:
+            raise ValueError('Укажите текст или изображение')
+        old_schedule = (task.task_type, task.interval_minutes, task.cron_expression, task.once_at)
+        new_schedule = (task_type, interval, cron, once_at)
+        task.account_id, task.group_id = account_id, group_id
+        task.group_name, task.topic_id = form.get('group_name', '').strip(), topic_id
+        task.message, task.image = text, image
+        task.task_type, task.interval_minutes, task.cron_expression, task.once_at = new_schedule
+        task.random_delay_min, task.random_delay_max = low, high
+        task.send_immediately = form.get('send_immediately') == 'on'
+        task.revision = (task.revision or 0) + 1
+        if new or old_schedule != new_schedule:
+            task.next_run_at = None
+        for item in task.images:
+            if item.state == 'pending' and str(item.id) in remove_ids:
+                item.state = 'skipped'
+        task.images.extend(additions)
+        if not new and task.completed_at and additions and task_type != 'once':
+            task.completed_at = None
+        if task.is_active and pool_mode and not remaining and not additions:
+            task.is_active = False
+        return created_files
+    except Exception:
+        for name in created_files:
+            image_path(name).unlink(missing_ok=True)
+        raise
+
+
+def notify_scheduler():
+    manager = current_app.telegram_manager
+    if manager:
+        manager.submit(manager._reload_scheduled_tasks())
 
 
 @tasks_bp.route('/')
@@ -14,67 +126,18 @@ def index():
 
 @tasks_bp.route('/add', methods=['POST'])
 def add():
-    account_id = request.form.get('account_id', '').strip()
-    group_id = request.form.get('group_id', '').strip()
-    group_name = request.form.get('group_name', '').strip()
-    topic_id_raw = request.form.get('topic_id', '').strip()
-    topic_id = int(topic_id_raw) if topic_id_raw.lstrip('-').isdigit() and topic_id_raw.lstrip('-') else None
-    message = request.form.get('message', '').strip()
-    task_type = request.form.get('task_type', 'interval')
-    interval_minutes = request.form.get('interval_minutes', '').strip()
-    cron_expression = request.form.get('cron_expression', '').strip()
-    random_delay_min = request.form.get('random_delay_min', '0').strip()
-    random_delay_max = request.form.get('random_delay_max', '0').strip()
-
-    if not all([account_id, group_id]) or not (message or request.files.get('image')):
-        flash('Укажите аккаунт, ID получателя и текст или изображение', 'danger')
-        return redirect(url_for('tasks.index'))
-
+    task = ScheduledTask(is_active=True)
     try:
-        account_id = int(account_id)
-    except ValueError:
-        flash('Некорректный аккаунт', 'danger')
-        return redirect(url_for('tasks.index'))
-
-    task = ScheduledTask(
-        account_id=account_id,
-        group_id=group_id,
-        group_name=group_name,
-        topic_id=topic_id,
-        message=message,
-        task_type=task_type,
-        random_delay_min=int(random_delay_min) if random_delay_min.isdigit() else 0,
-        random_delay_max=int(random_delay_max) if random_delay_max.isdigit() else 0,
-    )
-
-    if task_type == 'interval':
-        if not interval_minutes or not interval_minutes.isdigit():
-            flash('Укажите положительный интервал в минутах', 'danger')
-            return redirect(url_for('tasks.index'))
-        task.interval_minutes = int(interval_minutes)
-    elif task_type == 'cron':
-        if not cron_expression or len(cron_expression.split()) != 5:
-            flash('Некорректное выражение Cron: нужно 5 полей, например "0 9 * * *"', 'danger')
-            return redirect(url_for('tasks.index'))
-        task.cron_expression = cron_expression
-
-    try:
-        task.image = save_image()
-    except ValueError as exc:
+        update_fields(task, new=True)
+        db.session.add(task)
+        db.session.commit()
+    except (ValueError, TypeError) as exc:
+        db.session.rollback()
         flash(str(exc), 'danger')
         return redirect(url_for('tasks.index'))
-    db.session.add(task)
-    db.session.commit()
-
-    # 自动同步目标到目标列表
     from web.routes.targets import upsert_target
-    upsert_target(group_id, group_name)
-
-    # 通知 Telegram 管理器重新加载任务
-    manager = current_app.telegram_manager
-    if manager:
-        manager.submit(manager._reload_scheduled_tasks())
-
+    upsert_target(task.group_id, task.group_name)
+    notify_scheduler()
     flash('Задача добавлена', 'success')
     return redirect(url_for('tasks.index'))
 
@@ -83,94 +146,54 @@ def add():
 def edit(task_id):
     task = ScheduledTask.query.get_or_404(task_id)
     accounts = Account.query.filter_by(status='authorized').all()
-
     if request.method == 'POST':
-        account_id = request.form.get('account_id', '').strip()
-        group_id = request.form.get('group_id', '').strip()
-        message = request.form.get('message', '').strip()
-
-        if not all([account_id, group_id]) or not (message or request.files.get('image') or (task.image and request.form.get('remove_image') != 'on')):
-            flash('Укажите аккаунт, ID получателя и текст или изображение', 'danger')
-            return render_template('task_edit.html', task=task, accounts=accounts)
-
         try:
-            task.account_id = int(account_id)
-        except ValueError:
-            flash('Некорректный аккаунт', 'danger')
-            return render_template('task_edit.html', task=task, accounts=accounts)
-
-        task.group_id = group_id
-        task.group_name = request.form.get('group_name', '').strip()
-        topic_id_raw = request.form.get('topic_id', '').strip()
-        task.topic_id = int(topic_id_raw) if topic_id_raw.lstrip('-').isdigit() and topic_id_raw.lstrip('-') else None
-        task.message = message
-        task.task_type = request.form.get('task_type', 'interval')
-        random_delay_min = request.form.get('random_delay_min', '0').strip()
-        random_delay_max = request.form.get('random_delay_max', '0').strip()
-        task.random_delay_min = int(random_delay_min) if random_delay_min.isdigit() else 0
-        task.random_delay_max = int(random_delay_max) if random_delay_max.isdigit() else 0
-
-        if task.task_type == 'interval':
-            interval_minutes = request.form.get('interval_minutes', '').strip()
-            if not interval_minutes or not interval_minutes.isdigit():
-                flash('Укажите положительный интервал в минутах', 'danger')
-                return render_template('task_edit.html', task=task, accounts=accounts)
-            task.interval_minutes = int(interval_minutes)
-        elif task.task_type == 'cron':
-            cron_expression = request.form.get('cron_expression', '').strip()
-            if not cron_expression or len(cron_expression.split()) != 5:
-                flash('Некорректное выражение Cron: нужно 5 полей, например "0 9 * * *"', 'danger')
-                return render_template('task_edit.html', task=task, accounts=accounts)
-            task.cron_expression = cron_expression
-
-        try:
-            task.image = save_image(task.image)
-        except ValueError as exc:
+            if task.delivery_state == 'sending':
+                raise ValueError('Сейчас выполняется отправка. Дождитесь её завершения')
+            update_fields(task)
+            db.session.commit()
+        except (ValueError, TypeError) as exc:
             db.session.rollback()
             flash(str(exc), 'danger')
             return render_template('task_edit.html', task=task, accounts=accounts)
-        db.session.commit()
-
-        # 自动同步目标到目标列表
         from web.routes.targets import upsert_target
-        upsert_target(group_id, task.group_name)
-
-        # 通知 Telegram 管理器重新加载任务
-        manager = current_app.telegram_manager
-        if manager:
-            manager.submit(manager._reload_scheduled_tasks())
-
+        upsert_target(task.group_id, task.group_name)
+        notify_scheduler()
         flash('Задача обновлена', 'success')
         return redirect(url_for('tasks.index'))
-
     return render_template('task_edit.html', task=task, accounts=accounts)
 
 
 @tasks_bp.route('/<int:task_id>/toggle', methods=['POST'])
 def toggle(task_id):
     task = ScheduledTask.query.get_or_404(task_id)
-    manager = current_app.telegram_manager
+    if not task.is_active:
+        if task.task_type == 'once' and (task.completed_at or task.delivery_state != 'ready'):
+            flash('Эта разовая отправка уже выполнена или не подтверждена. Для новой отправки создайте новую задачу', 'warning')
+            return redirect(url_for('tasks.index'))
+        if task.images and not any(item.state == 'pending' for item in task.images):
+            flash('Пул закончился. Добавьте новые изображения в редакторе', 'warning')
+            return redirect(url_for('tasks.index'))
+        task.delivery_state = 'ready'
+        task.completed_at = None
+        task.last_error = ''
+        task.next_run_at = None
     task.is_active = not task.is_active
+    task.revision += 1
     db.session.commit()
-
-    if manager:
-        if task.is_active:
-            manager.submit(manager._reload_scheduled_tasks())
-        else:
-            manager.submit(manager.remove_task_job(task.id))
-
-    status = 'Включено' if task.is_active else 'Отключено'
-    flash(f'Задача: {status}', 'success')
+    notify_scheduler()
+    flash('Задача включена' if task.is_active else 'Задача остановлена', 'success')
     return redirect(url_for('tasks.index'))
 
 
 @tasks_bp.route('/<int:task_id>/delete', methods=['POST'])
 def delete(task_id):
     task = ScheduledTask.query.get_or_404(task_id)
-    manager = current_app.telegram_manager
-    if manager:
-        manager.submit(manager.remove_task_job(task.id))
+    if task.delivery_state == 'sending':
+        flash('Дождитесь завершения текущей отправки', 'warning')
+        return redirect(url_for('tasks.index'))
     db.session.delete(task)
     db.session.commit()
+    notify_scheduler()
     flash('Задача удалена', 'success')
     return redirect(url_for('tasks.index'))

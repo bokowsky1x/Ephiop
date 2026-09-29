@@ -68,6 +68,8 @@ def api():
             task_info = f'Каждые {task.interval_minutes} мин.'
         elif task.task_type == 'cron' and task.cron_expression:
             task_info = f'Cron: {task.cron_expression}'
+        elif task.task_type == 'once':
+            task_info = 'Разовая отправка'
 
         result.append({
             'type': 'scheduled_task',
@@ -78,7 +80,7 @@ def api():
             'group_name': task.group_name or '',
             'topic_id': task.topic_id,
             'message': task.message[:80] + ('…' if len(task.message) > 80 else ''),
-            'image': task.image,
+            'image': next((item.filename for item in task.images if item.state == 'pending'), task.image),
             'task_info': task_info,
             'scheduled_at': next_run or '—',
             'remaining_seconds': remaining_sec,  # None 表示未加载到 scheduler
@@ -113,11 +115,20 @@ def delete_items():
                 db.session.delete(row)
                 deleted += 1
         elif item_type == 'scheduled_task':
+            task = db.session.get(ScheduledTask, item_id)
+            if task and task.task_type == 'once':
+                task.is_active = False
+                task.revision += 1
+                task.next_run_at = None
+                deleted += 1
             manager = current_app.telegram_manager
             if manager and manager.scheduler:
                 job_id = f'task_{item_id}'
                 job = manager.scheduler.get_job(job_id)
                 if job:
+                    if task and task.task_type == 'once':
+                        manager.scheduler.remove_job(job_id)
+                        continue
                     # 用相同的 trigger 重新调度 → 跳过当前执行，直接算下一次
                     manager.scheduler.reschedule_job(job_id, trigger=job.trigger)
                     deleted += 1

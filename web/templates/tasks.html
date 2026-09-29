@@ -70,46 +70,8 @@
 {% with current_image=none %}{% include "_image_field.html" %}{% endwith %}
 
           </div>
-          <div class="mb-3">
-            <label class="form-label">Тип задачи</label>
-            <div class="btn-group w-100" role="group">
-              <input type="radio" class="btn-check" name="task_type" id="type_interval"
-                     value="interval" checked onchange="switchType()">
-              <label class="btn btn-outline-primary" for="type_interval">По интервалу</label>
-              <input type="radio" class="btn-check" name="task_type" id="type_cron"
-                     value="cron" onchange="switchType()">
-              <label class="btn btn-outline-primary" for="type_cron">Выражение Cron</label>
-            </div>
-          </div>
-          <div id="interval-field" class="mb-3">
-            <label class="form-label">Интервал, минут <span class="text-danger">*</span></label>
-            <div class="input-group">
-              <input type="number" name="interval_minutes" class="form-control"
-                     placeholder="60" min="1">
-              <span class="input-group-text">мин.</span>
-            </div>
-          </div>
-          <div id="random-delay-field" class="mb-3">
-            <label class="form-label">Диапазон задержки (с)</label>
-            <div class="input-group">
-              <span class="input-group-text">Минимум</span>
-              <input type="number" name="random_delay_min" class="form-control"
-                     placeholder="0" min="0" value="0">
-              <span class="input-group-text">Максимум</span>
-              <input type="number" name="random_delay_max" class="form-control"
-                     placeholder="0" min="0" value="0">
-              <span class="input-group-text">с</span>
-            </div>
-            <div class="form-text">Укажите 0 в обоих полях, чтобы отключить задержку.</div>
-          </div>
-          <div id="cron-field" class="mb-3" style="display:none">
-            <label class="form-label">Выражение Cron <span class="text-danger">*</span></label>
-            <input type="text" name="cron_expression" class="form-control"
-                   placeholder="0 9 * * *">
-            <div class="form-text">
-              Минута, час, день, месяц, день недели. Например: <code>0 9 * * *</code> ежедневно в 09:00 (UTC).
-            </div>
-          </div>
+          {% include "_task_pool.html" %}
+          {% include "_task_schedule.html" %}
           <button type="submit" class="btn btn-primary w-100">
             <i class="bi bi-clock-history me-1"></i>Добавить задачу
           </button>
@@ -159,6 +121,7 @@
               <td class="small text-truncate" style="max-width:130px" title="{{ task.message }}">
                 {{ task.message }}
                 {% if task.image %}<i class="bi bi-image" title="С изображением"></i>{% endif %}
+                {% if task.images %}<div class="small"><i class="bi bi-images"></i> Осталось: {{ task.images|selectattr('state', 'equalto', 'pending')|list|length }} / {{ task.images|length }}</div>{% endif %}
               </td>
               <td class="small">
                 {% if task.task_type == 'interval' %}
@@ -170,6 +133,9 @@
                     +Случайно {{ task.random_delay_min }}~{{ task.random_delay_max }}s
                   </span>
                   {% endif %}
+                {% elif task.task_type == 'once' %}
+                  <span class="badge bg-info text-dark">Один раз</span>
+                  <div>{{ task.once_at.strftime('%d.%m %H:%M UTC') if task.once_at else 'Сейчас' }}</div>
                 {% else %}
                   <code class="small">{{ task.cron_expression }}</code>
                   {% if task.random_delay_min and task.random_delay_max and task.random_delay_max > 0 %}
@@ -181,10 +147,13 @@
               </td>
               <td>
                 {% if task.is_active %}
-                  <span class="badge bg-success">Работает</span>
+                  <span class="badge bg-success">Активна</span>
+                {% elif task.completed_at %}
+                  <span class="badge bg-primary">Завершена</span>
                 {% else %}
                   <span class="badge bg-secondary">Остановлено</span>
                 {% endif %}
+                {% if task.last_error %}<div class="small text-danger" style="min-width:150px;max-width:260px;white-space:normal">{{ task.last_error }}</div>{% endif %}
               </td>
               <td>
                 <div class="btn-group btn-group-sm">
@@ -226,9 +195,10 @@
 {% block scripts %}
 <script>
 function switchType() {
-  const isCron = document.getElementById('type_cron').checked;
-  document.getElementById('interval-field').style.display = isCron ? 'none' : 'block';
-  document.getElementById('cron-field').style.display = isCron ? 'block' : 'none';
+  const mode = document.getElementById('task-type').value;
+  ['interval', 'cron', 'once'].forEach(type => {
+    document.getElementById(type + '-field').style.display = mode === type ? 'block' : 'none';
+  });
 }
 
 // ── 目标实体识别 + 话题检测 ──

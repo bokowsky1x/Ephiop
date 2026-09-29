@@ -107,6 +107,13 @@ class ScheduledTask(db.Model):
     task_type = db.Column(db.String(20), default='interval')
     interval_minutes = db.Column(db.Integer)
     cron_expression = db.Column(db.String(100))
+    once_at = db.Column(db.DateTime)
+    send_immediately = db.Column(db.Boolean, default=False)
+    revision = db.Column(db.Integer, default=0, nullable=False)
+    delivery_state = db.Column(db.String(20), default='ready', nullable=False)
+    completed_at = db.Column(db.DateTime)
+    last_error = db.Column(db.Text, default='')
+    images = db.relationship('TaskImage', cascade='all, delete-orphan', order_by='TaskImage.id', lazy='select')
     # 随机延迟：在触发时间后额外随机等待 [min, max] 秒，0 表示不启用
     random_delay_min = db.Column(db.Integer, default=0)
     random_delay_max = db.Column(db.Integer, default=0)
@@ -131,6 +138,17 @@ class ScheduledTask(db.Model):
             'random_delay_max': self.random_delay_max,
             'is_active': self.is_active,
         }
+
+
+class TaskImage(db.Model):
+    __tablename__ = 'task_images'
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.Integer, db.ForeignKey('scheduled_tasks.id'), nullable=False, index=True)
+    filename = db.Column(db.String(100), nullable=False)
+    digest = db.Column(db.String(64), nullable=False)
+    state = db.Column(db.String(20), default='pending', nullable=False)
+    sent_at = db.Column(db.DateTime)
+    __table_args__ = (db.UniqueConstraint('task_id', 'digest'),)
 
 
 class PendingReply(db.Model):

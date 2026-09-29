@@ -25,6 +25,11 @@ def save_image(existing=None):
         if not text and not result:
             raise ValueError('Укажите текст или изображение')
         return result
+    return store_image(upload)[0]
+
+
+def store_image(upload):
+    import hashlib
     data = upload.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
         raise ValueError('Размер изображения не должен превышать 10 МБ')
@@ -43,7 +48,7 @@ def save_image(existing=None):
     path = image_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(normalized.getvalue())
-    return name
+    return name, hashlib.sha256(normalized.getvalue()).hexdigest()
 
 
 async def send_content(client, target, message, image=None, app=None, **kwargs):
