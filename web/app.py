@@ -9,6 +9,8 @@ def create_app(telegram_manager=None):
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = Config.SECRET_KEY
     app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
+    app.config['OPENAI_API_KEY'] = Config.OPENAI_API_KEY
+    app.config['OPENAI_MODEL'] = Config.OPENAI_MODEL
 
     db.init_app(app)
 
@@ -24,9 +26,15 @@ def create_app(telegram_manager=None):
             'revision': 'INTEGER NOT NULL DEFAULT 0',
             'delivery_state': "VARCHAR(20) NOT NULL DEFAULT 'ready'",
             'completed_at': 'DATETIME', 'last_error': "TEXT DEFAULT ''",
+            'caption_mode': "VARCHAR(20) NOT NULL DEFAULT 'fixed'",
+            'caption_language': "VARCHAR(80) NOT NULL DEFAULT 'ru'",
+            'caption_max_chars': 'INTEGER NOT NULL DEFAULT 300',
+            'caption_use_image': 'BOOLEAN NOT NULL DEFAULT 0',
         }.items():
             if name not in task_columns:
                 db.session.execute(text(f'ALTER TABLE scheduled_tasks ADD COLUMN {name} {definition}'))
+        if 'caption' not in {column['name'] for column in inspect(db.engine).get_columns('task_images')}:
+            db.session.execute(text('ALTER TABLE task_images ADD COLUMN caption TEXT'))
         if 'session_kind' not in {column['name'] for column in inspect(db.engine).get_columns('accounts')}:
             db.session.execute(text("ALTER TABLE accounts ADD COLUMN session_kind VARCHAR(20) DEFAULT 'telethon'"))
         for table in ('keywords', 'scheduled_tasks', 'pending_replies'):
@@ -39,6 +47,15 @@ def create_app(telegram_manager=None):
         from flask import send_from_directory
         from pathlib import Path
         return send_from_directory(Path(app.instance_path) / 'uploads', name)
+
+    @app.context_processor
+    def caption_context():
+        import secrets
+        from flask import session
+        from captions import LANGUAGES
+        session.setdefault('caption_csrf', secrets.token_urlsafe(32))
+        return dict(caption_languages=LANGUAGES, caption_api_ready=bool(app.config['OPENAI_API_KEY']),
+                    caption_csrf=session['caption_csrf'])
 
     @app.errorhandler(413)
     def too_large(error):

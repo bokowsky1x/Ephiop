@@ -5,3 +5,4 @@ apscheduler>=3.10.4
 python-dotenv>=1.0.0
 Pillow>=10.4.0
 opentele2==1.2.1
+openai>=2.0.0,<3.0.0

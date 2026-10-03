@@ -20,9 +20,9 @@ from time_parser import parse_chinese_time
 from web.app import create_app
 
 
-def picture():
+def picture(color='red'):
     stream = BytesIO()
-    Image.new('RGB', (20, 20), 'red').save(stream, 'PNG')
+    Image.new('RGB', (20, 20), color).save(stream, 'PNG')
     stream.seek(0)
     return stream, 'image.png'
 
@@ -235,6 +235,127 @@ class FeaturesTest(unittest.TestCase):
         self.assertEqual(task.images[0].state, 'uncertain')
         self.assertIsNone(self.manager.scheduler.get_job(f'task_{task.id}'))
 
+    def test_folder_pool_natural_order_and_non_images(self):
+        red, _ = picture()
+        blue, _ = picture('blue')
+        self.task(pool_folder=[(red, 'folder/screen10.png'), (BytesIO(b'text'), 'folder/readme.txt'),
+                               (blue, 'folder/screen2.png')])
+        task = ScheduledTask.query.one()
+        self.assertEqual(len(task.images), 2)
+        with Image.open(Path(self.temp.name) / 'uploads' / task.images[0].filename) as first:
+            self.assertGreater(first.getpixel((0, 0))[2], 200)
+
+    def test_ai_form_validation_and_long_source(self):
+        self.app.config['OPENAI_API_KEY'] = ''
+        self.task(caption_mode='ai', image=picture())
+        self.assertEqual(ScheduledTask.query.count(), 0)
+        self.app.config['OPENAI_API_KEY'] = 'fake-test-key'
+        self.task(caption_mode='ai', message='Основа ' * 400, pool_images=[picture()], caption_language='am')
+        task = ScheduledTask.query.one()
+        self.assertEqual(task.caption_language, 'am')
+        self.assertEqual(task.caption_mode, 'ai')
+        self.assertEqual(self.client.get(f'/tasks/{task.id}/edit').status_code, 200)
+        task.images[0].caption = 'Старый пример'
+        db.session.commit()
+        self.client.post(f'/tasks/{task.id}/edit', data=dict(account_id=str(self.account_id), group_id='123',
+            message='Новая основа', task_type='interval', interval_minutes='120', caption_mode='ai',
+            caption_language='other', caption_custom_language='Italian', caption_max_chars='200'))
+        self.assertEqual(task.caption_language, 'Italian')
+        self.assertIsNone(task.images[0].caption)
+
+    def test_ai_caption_pool_delivery_and_history(self):
+        from task_scheduler import execute_task
+        self.app.config['OPENAI_API_KEY'] = 'fake-test-key'
+        self.task(caption_mode='ai', caption_language='en', caption_use_image='on', interval_minutes='60',
+                  pool_images=[picture(), picture('blue')])
+        task = ScheduledTask.query.one()
+        task_id, revision = task.id, task.revision
+        self.start_test_scheduler()
+        with patch('task_scheduler.generate_caption', new_callable=AsyncMock, side_effect=['First caption', 'Second caption']) as generate, patch('task_scheduler.send_content', new_callable=AsyncMock) as send:
+            asyncio.run(execute_task(self.manager, task_id, revision))
+            asyncio.run(execute_task(self.manager, task_id, revision))
+            self.assertEqual([call.args[2] for call in send.await_args_list], ['First caption', 'Second caption'])
+            self.assertEqual(generate.await_args_list[1].kwargs['previous'], ['First caption'])
+            self.assertIsNotNone(generate.await_args_list[0].kwargs['image'])
+        db.session.expire_all()
+        task = db.session.get(ScheduledTask, task_id)
+        self.assertFalse(task.is_active)
+        self.assertEqual([item.caption for item in task.images], ['First caption', 'Second caption'])
+
+    def test_ai_failure_and_restart_preserve_pending_image(self):
+        from captions import CaptionError
+        from task_scheduler import execute_task
+        self.app.config['OPENAI_API_KEY'] = 'fake-test-key'
+        self.task(caption_mode='ai', pool_images=[picture()])
+        task = ScheduledTask.query.one()
+        task_id, revision = task.id, task.revision
+        self.start_test_scheduler()
+        with patch('task_scheduler.generate_caption', new_callable=AsyncMock, side_effect=CaptionError('Нет баланса')), patch('task_scheduler.send_content', new_callable=AsyncMock) as send:
+            with self.assertRaises(CaptionError):
+                asyncio.run(execute_task(self.manager, task_id, revision))
+            send.assert_not_awaited()
+        db.session.expire_all()
+        task = db.session.get(ScheduledTask, task_id)
+        self.assertEqual(task.delivery_state, 'ready')
+        self.assertFalse(task.is_active)
+        self.assertEqual(task.images[0].state, 'pending')
+        task.is_active, task.delivery_state = True, 'generating'
+        db.session.commit()
+        asyncio.run(self.manager._reload_scheduled_tasks())
+        db.session.expire_all()
+        self.assertEqual(task.delivery_state, 'ready')
+        self.assertFalse(task.is_active)
+        self.assertEqual(task.images[0].state, 'pending')
+
+    def test_pausing_during_caption_prevents_delivery(self):
+        from task_scheduler import execute_task
+        self.app.config['OPENAI_API_KEY'] = 'fake-test-key'
+        self.task(caption_mode='ai', pool_images=[picture()])
+        task = ScheduledTask.query.one()
+        task_id, revision = task.id, task.revision
+        self.start_test_scheduler()
+        async def pause(*args, **kwargs):
+            with self.app.app_context():
+                row = db.session.get(ScheduledTask, task_id)
+                row.is_active = False
+                row.revision += 1
+                db.session.commit()
+            return 'Generated caption'
+        with patch('task_scheduler.generate_caption', side_effect=pause), patch('task_scheduler.send_content', new_callable=AsyncMock) as send:
+            asyncio.run(execute_task(self.manager, task_id, revision))
+            send.assert_not_awaited()
+        db.session.expire_all()
+        self.assertEqual(db.session.get(ScheduledTask, task_id).images[0].state, 'pending')
+
+    def test_caption_api_payload_and_duplicate_retries(self):
+        from captions import generate_caption
+        self.app.config['OPENAI_API_KEY'] = 'fake-test-key'
+        self.task(pool_images=[picture()])
+        name = ScheduledTask.query.one().images[0].filename
+        responses = [SimpleNamespace(output_text=value, status='completed') for value in ('ПРИВЕТ!', 'x' * 301, 'Новая формулировка')]
+        api = SimpleNamespace(responses=SimpleNamespace(create=AsyncMock(side_effect=responses)))
+        context = AsyncMock()
+        context.__aenter__.return_value = api
+        with patch('captions.AsyncOpenAI', return_value=context):
+            result = asyncio.run(generate_caption(self.app, 'Привет', 'en', image=name, previous=['Привет']))
+        self.assertEqual(result, 'Новая формулировка')
+        self.assertEqual(api.responses.create.await_count, 3)
+        payload = api.responses.create.await_args.kwargs
+        self.assertFalse(payload['store'])
+        self.assertEqual(payload['input'][0]['content'][1]['type'], 'input_image')
+        self.assertTrue(payload['input'][0]['content'][1]['image_url'].startswith('data:image/jpeg;base64,'))
+
+    def test_caption_preview_csrf_and_no_telegram_send(self):
+        self.app.config['OPENAI_API_KEY'] = 'fake-test-key'
+        self.client.get('/tasks/')
+        with self.client.session_transaction() as state:
+            token = state['caption_csrf']
+        self.assertEqual(self.client.post('/tasks/caption-preview', json=dict(message='Основа')).status_code, 400)
+        with patch('web.routes.tasks.generate_caption', new_callable=AsyncMock, return_value='Пример'):
+            result = self.client.post('/tasks/caption-preview', json=dict(message='Основа', caption_language='am', csrf_token=token))
+        self.assertEqual(result.json['caption'], 'Пример')
+        self.assertEqual(ScheduledTask.query.count(), 0)
+
     def test_dedup_preserves_different_images(self):
         set_setting('smart_dedup_enabled', 'true')
         for image in ('a.jpg', 'b.jpg', 'a.jpg'):
@@ -398,6 +519,9 @@ class FeaturesTest(unittest.TestCase):
                 db.session.execute(sa.text('ALTER TABLE accounts DROP COLUMN session_kind'))
                 for column in ('once_at', 'send_immediately', 'revision', 'delivery_state', 'completed_at', 'last_error'):
                     db.session.execute(sa.text(f'ALTER TABLE scheduled_tasks DROP COLUMN {column}'))
+                for column in ('caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image'):
+                    db.session.execute(sa.text(f'ALTER TABLE scheduled_tasks DROP COLUMN {column}'))
+                db.session.execute(sa.text('ALTER TABLE task_images DROP COLUMN caption'))
                 db.session.commit()
                 db.engine.dispose()
             for _ in range(2):
@@ -407,6 +531,9 @@ class FeaturesTest(unittest.TestCase):
                     self.assertEqual(Account.query.one().session_kind, 'telethon')
                     for table in ('keywords', 'scheduled_tasks', 'pending_replies'):
                         self.assertIn('image', {column['name'] for column in sa.inspect(db.engine).get_columns(table)})
+                    self.assertTrue({'caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image'} <=
+                                    {column['name'] for column in sa.inspect(db.engine).get_columns('scheduled_tasks')})
+                    self.assertIn('caption', {column['name'] for column in sa.inspect(db.engine).get_columns('task_images')})
                     db.session.remove()
                     db.engine.dispose()
 

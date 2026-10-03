@@ -2,12 +2,17 @@
   <label for="pool-images" class="form-label">Пул скриншотов без повторов</label>
   <input id="pool-images" type="file" name="pool_images" class="form-control" accept="image/jpeg,image/png,image/webp" multiple>
 </div>
+<div class="mb-3">
+  <label for="pool-folder" class="form-label">Или папка со скриншотами</label>
+  <input id="pool-folder" type="file" name="pool_folder" class="form-control" accept="image/jpeg,image/png,image/webp" webkitdirectory multiple>
+</div>
 {% if task is defined and task.images %}
 <div class="d-flex flex-wrap gap-3 mb-3">
   {% for item in task.images %}
   <div style="width:110px">
     <a href="{{ url_for('media', name=item.filename) }}" target="_blank" rel="noopener"><img src="{{ url_for('media', name=item.filename) }}" alt="Скриншот {{ loop.index }}" style="width:110px;height:80px;object-fit:contain;background:#fff" loading="lazy"></a>
     <div class="small">{{ {'pending':'Ожидает', 'sending':'Отправляется', 'sent':'Отправлен', 'uncertain':'Не подтверждён', 'skipped':'Исключён'}.get(item.state, item.state) }}</div>
+    {% if item.caption %}<details class="small" style="overflow-wrap:anywhere"><summary>Подпись</summary>{{ item.caption }}</details>{% endif %}
     {% if item.state == 'pending' %}<label class="small"><input class="form-check-input" type="checkbox" name="remove_pool_ids" value="{{ item.id }}"> Исключить</label>{% endif %}
   </div>
   {% endfor %}

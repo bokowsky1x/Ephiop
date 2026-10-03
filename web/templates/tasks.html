@@ -64,12 +64,13 @@
             <div class="form-text" id="task-topic-help"></div>
           </div>
           <div class="mb-3">
-            <label class="form-label">Текст сообщения</label>
-            <textarea name="message" class="form-control" rows="3"
+            <label class="form-label" for="task-message">Текст сообщения / основа для AI</label>
+            <textarea id="task-message" name="message" class="form-control" rows="3"
                       placeholder="Текст сообщения"></textarea>
 {% with current_image=none %}{% include "_image_field.html" %}{% endwith %}
 
           </div>
+          {% include "_task_caption.html" %}
           {% include "_task_pool.html" %}
           {% include "_task_schedule.html" %}
           <button type="submit" class="btn btn-primary w-100">
@@ -120,6 +121,7 @@
               </td>
               <td class="small text-truncate" style="max-width:130px" title="{{ task.message }}">
                 {{ task.message }}
+                {% if task.caption_mode == 'ai' %}<div class="small"><i class="bi bi-stars"></i> AI · {{ caption_languages.get(task.caption_language, task.caption_language) }}</div>{% endif %}
                 {% if task.image %}<i class="bi bi-image" title="С изображением"></i>{% endif %}
                 {% if task.images %}<div class="small"><i class="bi bi-images"></i> Осталось: {{ task.images|selectattr('state', 'equalto', 'pending')|list|length }} / {{ task.images|length }}</div>{% endif %}
               </td>

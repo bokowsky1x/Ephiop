@@ -1,0 +1,68 @@
+{% set editing = task is defined %}
+{% set mode = task.caption_mode if editing else 'fixed' %}
+{% set language = task.caption_language if editing else 'ru' %}
+<div class="mb-3">
+  <label for="caption-mode" class="form-label">Подпись к сообщениям</label>
+  <select id="caption-mode" name="caption_mode" class="form-select">
+    <option value="fixed" {{ 'selected' if mode == 'fixed' }}>Одинаковая подпись</option>
+    <option value="ai" {{ 'selected' if mode == 'ai' }}>AI: разные формулировки</option>
+  </select>
+</div>
+<div id="caption-options" {{ 'hidden' if mode != 'ai' }}>
+  <div class="mb-3">
+    <label for="caption-language" class="form-label">Язык подписи</label>
+    <select id="caption-language" name="caption_language" class="form-select">
+      {% for code, label in caption_languages.items() %}
+      <option value="{{ code }}" {{ 'selected' if code == language }}>{{ label }}</option>
+      {% endfor %}
+      <option value="other" {{ 'selected' if language not in caption_languages }}>Другой язык</option>
+    </select>
+    <input id="caption-custom-language" name="caption_custom_language" class="form-control mt-2" aria-label="Другой язык" placeholder="Название языка" maxlength="80" value="{{ language if language not in caption_languages else '' }}" {{ 'hidden' if language in caption_languages }}>
+  </div>
+  <div class="mb-3">
+    <label for="caption-limit" class="form-label">Максимум символов</label>
+    <input id="caption-limit" name="caption_max_chars" class="form-control" type="number" min="80" max="1000" value="{{ task.caption_max_chars if editing else 300 }}">
+  </div>
+  <div class="mb-3 form-check">
+    <input id="caption-use-image" name="caption_use_image" class="form-check-input" type="checkbox" {{ 'checked' if editing and task.caption_use_image }}>
+    <label for="caption-use-image" class="form-check-label">Учитывать содержимое скриншота</label>
+    <div class="small text-muted">При включении скриншот передаётся в OpenAI вместе с основой текста.</div>
+  </div>
+  {% if not caption_api_ready %}<div class="text-danger small mb-2">OpenAI API не настроен на сервере.</div>{% endif %}
+  <button id="caption-preview" type="button" class="btn btn-outline-secondary btn-sm mb-2" title="Пример по основе текста, без скриншота" {{ 'disabled' if not caption_api_ready }}><i class="bi bi-stars me-1"></i>Пример подписи</button>
+  <output id="caption-result" class="d-block small mb-3" style="overflow-wrap:anywhere" aria-live="polite"></output>
+</div>
+<script>
+(() => {
+  const mode = document.getElementById('caption-mode');
+  const options = document.getElementById('caption-options');
+  const language = document.getElementById('caption-language');
+  const custom = document.getElementById('caption-custom-language');
+  const preview = document.getElementById('caption-preview');
+  const result = document.getElementById('caption-result');
+  mode.addEventListener('change', () => { options.hidden = mode.value !== 'ai'; });
+  language.addEventListener('change', () => { custom.hidden = language.value !== 'other'; });
+  preview.addEventListener('click', async () => {
+    preview.disabled = true;
+    result.textContent = 'Готовится пример…';
+    result.classList.remove('text-danger');
+    try {
+      const response = await fetch({{ url_for('tasks.caption_preview')|tojson }}, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          csrf_token: {{ caption_csrf|tojson }},
+          message: mode.closest('form').querySelector('[name="message"]').value,
+          caption_language: language.value, caption_custom_language: custom.value,
+          caption_max_chars: document.getElementById('caption-limit').value
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось получить подпись');
+      result.textContent = data.caption;
+    } catch (error) {
+      result.textContent = error.message;
+      result.classList.add('text-danger');
+    } finally { preview.disabled = false; }
+  });
+})();
+</script>

@@ -1,11 +1,33 @@
 from datetime import datetime, timezone
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
+import re
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, session, jsonify
 from apscheduler.triggers.cron import CronTrigger
 
 from models import db, Account, ScheduledTask, TaskImage
 from media import save_image, store_image, image_path
+from captions import CaptionError, LANGUAGES, generate_caption
 
 tasks_bp = Blueprint('tasks', __name__)
+
+
+def caption_fields(form):
+    mode = form.get('caption_mode', 'fixed')
+    if mode not in ('fixed', 'ai'):
+        raise ValueError('Неизвестный режим подписи')
+    language = form.get('caption_language', 'ru').strip()
+    if language == 'other':
+        language = form.get('caption_custom_language', '').strip()
+    if not language or len(language) > 80:
+        raise ValueError('Укажите язык подписи (до 80 символов)')
+    limit = int(form.get('caption_max_chars', '300'))
+    if not 80 <= limit <= 1000:
+        raise ValueError('Длина подписи: от 80 до 1000 символов')
+    if mode == 'ai':
+        if not current_app.config.get('OPENAI_API_KEY'):
+            raise ValueError('На сервере не настроен OPENAI_API_KEY')
+        if not form.get('message', '').strip() or len(form.get('message', '')) > 4000:
+            raise ValueError('Укажите основу текста для AI (до 4000 символов)')
+    return mode, language, limit, form.get('caption_use_image') == 'on'
 
 
 def update_fields(task, new=False):
@@ -57,7 +79,14 @@ def update_fields(task, new=False):
         if topic_id is not None and topic_id <= 0:
             raise ValueError('ID темы должен быть положительным')
         text = form.get('message', '').strip()
+        caption_options = caption_fields(form)
+        ai = caption_options[0] == 'ai'
         uploads = [upload for upload in request.files.getlist('pool_images') if upload.filename]
+        folder = [upload for upload in request.files.getlist('pool_folder') if upload.filename]
+        folder = [upload for upload in folder if upload.filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+        folder.sort(key=lambda upload: tuple((0, int(part)) if part.isdigit() else (1, part.casefold())
+                                            for part in re.split(r'(\d+)', upload.filename)))
+        uploads.extend(folder)
         if len(uploads) > 50:
             raise ValueError('Можно добавить не более 50 изображений за один раз')
         if uploads and request.files.get('image'):
@@ -65,11 +94,11 @@ def update_fields(task, new=False):
         remove_ids = set(form.getlist('remove_pool_ids'))
         remaining = [item for item in task.images if item.state == 'pending' and str(item.id) not in remove_ids]
         pool_mode = bool(task.images or uploads)
-        if pool_mode and len(text) > 1024:
+        if pool_mode and not ai and len(text) > 1024:
             raise ValueError('Подпись к изображению не должна превышать 1024 символа')
         if pool_mode and request.files.get('image'):
             raise ValueError('В этой задаче используется пул скриншотов')
-        image = None if pool_mode else save_image(task.image)
+        image = None if pool_mode else save_image(task.image, text='AI' if ai else text)
         known = {item.digest for item in task.images}
         additions = []
         for upload in uploads:
@@ -89,7 +118,15 @@ def update_fields(task, new=False):
         new_schedule = (task_type, interval, cron, once_at)
         task.account_id, task.group_id = account_id, group_id
         task.group_name, task.topic_id = form.get('group_name', '').strip(), topic_id
+        old_message = task.message
         task.message, task.image = text, image
+        old_caption_options = (task.caption_mode, task.caption_language, task.caption_max_chars, task.caption_use_image)
+        caption_changed = old_caption_options != caption_options or old_message != text
+        task.caption_mode, task.caption_language, task.caption_max_chars, task.caption_use_image = caption_options
+        if caption_changed:
+            for item in task.images:
+                if item.state == 'pending':
+                    item.caption = None
         task.task_type, task.interval_minutes, task.cron_expression, task.once_at = new_schedule
         task.random_delay_min, task.random_delay_max = low, high
         task.send_immediately = form.get('send_immediately') == 'on'
@@ -148,8 +185,8 @@ def edit(task_id):
     accounts = Account.query.filter_by(status='authorized').all()
     if request.method == 'POST':
         try:
-            if task.delivery_state == 'sending':
-                raise ValueError('Сейчас выполняется отправка. Дождитесь её завершения')
+            if task.delivery_state in ('sending', 'generating'):
+                raise ValueError('Сейчас готовится или отправляется сообщение. Дождитесь завершения')
             update_fields(task)
             db.session.commit()
         except (ValueError, TypeError) as exc:
@@ -189,11 +226,30 @@ def toggle(task_id):
 @tasks_bp.route('/<int:task_id>/delete', methods=['POST'])
 def delete(task_id):
     task = ScheduledTask.query.get_or_404(task_id)
-    if task.delivery_state == 'sending':
-        flash('Дождитесь завершения текущей отправки', 'warning')
+    if task.delivery_state in ('sending', 'generating'):
+        flash('Дождитесь завершения подготовки и отправки', 'warning')
         return redirect(url_for('tasks.index'))
     db.session.delete(task)
     db.session.commit()
     notify_scheduler()
     flash('Задача удалена', 'success')
     return redirect(url_for('tasks.index'))
+
+
+@tasks_bp.route('/caption-preview', methods=['POST'])
+def caption_preview():
+    import asyncio
+    import secrets
+    data = request.get_json(silent=True) or {}
+    if not session.get('caption_csrf') or not secrets.compare_digest(str(data.get('csrf_token', '')), session['caption_csrf']):
+        return jsonify(error='Обновите страницу и повторите попытку'), 400
+    try:
+        fields = {**data, 'caption_mode': 'ai'}
+        _, language, limit, _ = caption_fields(fields)
+        text = asyncio.run(asyncio.wait_for(generate_caption(
+            current_app._get_current_object(), data.get('message', ''), language, limit), timeout=80))
+        return jsonify(caption=text)
+    except (ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        return jsonify(error='Не удалось получить пример подписи. Повторите попытку позже'), 503

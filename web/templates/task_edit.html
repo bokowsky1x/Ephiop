@@ -63,11 +63,12 @@
             </div>
           </div>
           <div class="mb-3">
-            <label class="form-label">Текст сообщения</label>
-            <textarea name="message" class="form-control" rows="3">{{ task.message }}</textarea>
+            <label class="form-label" for="task-message">Текст сообщения / основа для AI</label>
+            <textarea id="task-message" name="message" class="form-control" rows="3">{{ task.message }}</textarea>
 {% if not task.images %}{% with current_image=task.image %}{% include "_image_field.html" %}{% endwith %}{% endif %}
 
           </div>
+          {% include "_task_caption.html" %}
           {% include "_task_pool.html" %}
           {% include "_task_schedule.html" %}
           <div class="d-flex gap-2">

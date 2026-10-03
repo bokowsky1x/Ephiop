@@ -7,6 +7,7 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from media import send_content
+from captions import CaptionError, generate_caption
 from models import Account, MessageLog, ScheduledTask, TaskImage, db
 
 
@@ -25,6 +26,10 @@ async def sync_tasks(manager):
         for task in tasks:
             job_id = f'task_{task.id}'
             if task.delivery_state != 'ready' and task.id not in running:
+                if task.delivery_state == 'generating':
+                    task.is_active, task.delivery_state, task.next_run_at = False, 'ready', None
+                    task.last_error = 'Генерация подписи была прервана. Скриншот остался в очереди; включите задачу снова.'
+                    continue
                 task.is_active = False
                 task.delivery_state = 'uncertain'
                 task.last_error = 'Отправка была прервана. Проверьте чат: автоматический повтор отключён.'
@@ -78,6 +83,7 @@ async def execute_task(manager, task_id, revision):
     manager._running_tasks.add(task_id)
     reserved = False
     image_id = None
+    generating = False
     try:
         with manager.app.app_context():
             task = db.session.get(ScheduledTask, task_id)
@@ -104,13 +110,48 @@ async def execute_task(manager, task_id, revision):
                     db.session.commit()
                     return
                 image, image_id = item.filename, item.id
-                item.state = 'sending'
             account_id, group_id, message, topic_id = task.account_id, task.group_id, task.message, task.topic_id
+            ai = task.caption_mode == 'ai'
+            cached_caption = item.caption if image_id else None
+            if ai:
+                language, limit = task.caption_language, task.caption_max_chars
+                source_image = image if task.caption_use_image else None
+                previous = [entry.caption for entry in task.images if entry.state == 'sent' and entry.caption]
+                task.delivery_state = 'generating'
+                db.session.commit()
+                generating = True
+        if ai:
+            message = cached_caption or await asyncio.wait_for(generate_caption(
+                manager.app, message, language, limit, image=source_image, previous=previous), timeout=80)
+        with manager.app.app_context():
+            task = db.session.get(ScheduledTask, task_id)
+            if not task:
+                return
+            if not task.is_active or task.revision != revision:
+                if generating and task.delivery_state == 'generating':
+                    task.delivery_state = 'ready'
+                    db.session.commit()
+                generating = False
+                return
+            if not db.session.get(Account, account_id).is_active or manager.clients.get(account_id) is not client:
+                if generating:
+                    task.delivery_state = 'ready'
+                    db.session.commit()
+                generating = False
+                return
+            if image_id:
+                item = db.session.get(TaskImage, image_id)
+                if item.state != 'pending':
+                    raise CaptionError('Состояние скриншота изменилось. Проверьте очередь задачи')
+                if ai:
+                    item.caption = message
+                item.state = 'sending'
             # Persist the reservation before the network call; an interrupted delivery
             # must never silently reuse an image or a one-time message on restart.
             task.delivery_state = 'sending'
             db.session.commit()
             reserved = True
+            generating = False
         kwargs = {'reply_to': topic_id} if topic_id else {}
         await send_content(client, int(group_id), message, image, app=manager.app, **kwargs)
         with manager.app.app_context():
@@ -133,7 +174,18 @@ async def execute_task(manager, task_id, revision):
                                       log_type='scheduled_sent', content=message or '[Изображение]'))
             db.session.commit()
             reserved = False
-    except BaseException:
+    except BaseException as exc:
+        if generating and not reserved:
+            with manager.app.app_context():
+                db.session.rollback()
+                task = db.session.get(ScheduledTask, task_id)
+                if task:
+                    task.is_active, task.delivery_state, task.next_run_at = False, 'ready', None
+                    reason = str(exc) if isinstance(exc, CaptionError) else 'Генерация подписи не завершилась'
+                    task.last_error = reason + '. Скриншот не отправлен и остаётся в очереди.'
+                    db.session.add(MessageLog(account_id=task.account_id, group_id=task.group_id,
+                                              log_type='error', content=task.last_error))
+                    db.session.commit()
         if reserved:
             with manager.app.app_context():
                 db.session.rollback()

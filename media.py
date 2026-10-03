@@ -14,9 +14,10 @@ def image_path(name):
     return Path(current_app.instance_path) / 'uploads' / name
 
 
-def save_image(existing=None):
+def save_image(existing=None, text=None):
     upload = request.files.get('image')
-    text = request.form.get('message', request.form.get('reply_message', '')).strip()
+    if text is None:
+        text = request.form.get('message', request.form.get('reply_message', '')).strip()
     keeping = existing and request.form.get('remove_image') != 'on'
     if (keeping or (upload and upload.filename)) and len(text) > 1024:
         raise ValueError('Подпись к изображению не должна превышать 1024 символа')

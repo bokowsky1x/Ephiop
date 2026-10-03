@@ -10,3 +10,5 @@ class Config:
     WEB_HOST = os.getenv('WEB_HOST', '127.0.0.1')
     WEB_PORT = int(os.getenv('WEB_PORT', 5000))
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+    OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4.1-mini')
