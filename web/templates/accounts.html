@@ -61,9 +61,15 @@
       </div>
       <div class="card-body p-0">
         {% if accounts %}
+        <form id="bulk-account-selection" method="get" action="{{ url_for('bulk_profile.index') }}" class="p-3 border-bottom d-flex align-items-center gap-3 flex-wrap">
+          <button id="bulk-account-edit" type="submit" class="btn btn-outline-primary btn-sm" disabled><i class="bi bi-people me-1"></i>Редактировать выбранные</button>
+          <span id="bulk-account-count" class="small text-muted" aria-live="polite">Выбрано: 0</span>
+        </form>
+        <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
           <thead class="table-light">
             <tr>
+              <th><input id="bulk-select-all" type="checkbox" class="form-check-input" aria-label="Выбрать все аккаунты"></th>
               <th>Аккаунт</th>
               <th>Телефон</th>
               <th>Статус</th>
@@ -74,6 +80,7 @@
           <tbody>
             {% for acc in accounts %}
             <tr>
+              <td><input type="checkbox" class="form-check-input bulk-account-check" form="bulk-account-selection" name="account_ids" value="{{ acc.id }}" aria-label="Выбрать {{ acc.name }}" {{ 'disabled' if acc.status != 'authorized' else '' }}></td>
               <td>
                 <div class="fw-semibold">{{ acc.name }}</div>
                 <div class="text-muted small">ID: {{ acc.id }}</div>
@@ -140,6 +147,7 @@
             {% endfor %}
           </tbody>
         </table>
+        </div>
         {% else %}
         <div class="text-center text-muted py-5">
           <i class="bi bi-people fs-2 d-block mb-2"></i>
@@ -220,6 +228,23 @@
 </div>
 
 <script>
+const bulkChecks = [...document.querySelectorAll('.bulk-account-check:not(:disabled)')];
+const bulkAll = document.getElementById('bulk-select-all');
+function updateBulkSelection() {
+  const count = bulkChecks.filter(input => input.checked).length;
+  document.getElementById('bulk-account-count').textContent = 'Выбрано: ' + count;
+  document.getElementById('bulk-account-edit').disabled = count === 0;
+  bulkAll.checked = count > 0 && count === bulkChecks.length;
+  bulkAll.indeterminate = count > 0 && count < bulkChecks.length;
+}
+if (bulkAll) {
+  bulkAll.addEventListener('change', () => {
+    bulkChecks.forEach(input => { input.checked = bulkAll.checked; });
+    updateBulkSelection();
+  });
+  bulkChecks.forEach(input => input.addEventListener('change', updateBulkSelection));
+  updateBulkSelection();
+}
 let currentAccId = null;
 function loadDialogs(accountId, accountName) {
   currentAccId = accountId;

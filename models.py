@@ -256,6 +256,120 @@ class TargetEntity(db.Model):
         }
 
 
+class AIAgent(db.Model):
+    __tablename__ = 'ai_agents'
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('accounts.id'), nullable=True)
+    account = db.relationship('Account', backref='ai_agents')
+    name = db.Column(db.String(100), nullable=False)
+    chat_id = db.Column(db.String(100), unique=True, nullable=False)
+    channel_id = db.Column(db.String(100), default='')
+    mode = db.Column(db.String(20), default='OFF', nullable=False)
+    consent = db.Column(db.Boolean, default=False, nullable=False)
+    community_replies = db.Column(db.Boolean, default=False, nullable=False)
+    support_router = db.Column(db.Boolean, default=True, nullable=False)
+    information = db.Column(db.Boolean, default=True, nullable=False)
+    vision = db.Column(db.Boolean, default=False, nullable=False)
+    scam_detection = db.Column(db.Boolean, default=True, nullable=False)
+    allow_delete = db.Column(db.Boolean, default=False, nullable=False)
+    reply_confidence = db.Column(db.Float, default=0.70, nullable=False)
+    moderation_confidence = db.Column(db.Float, default=0.90, nullable=False)
+    vision_confidence = db.Column(db.Float, default=0.93, nullable=False)
+    chat_cooldown = db.Column(db.Integer, default=45, nullable=False)
+    user_cooldown = db.Column(db.Integer, default=120, nullable=False)
+    intent_cooldown = db.Column(db.Integer, default=300, nullable=False)
+    fact_max_age_hours = db.Column(db.Integer, default=72, nullable=False)
+    revision = db.Column(db.Integer, default=0, nullable=False)
+    knowledge_revision = db.Column(db.Integer, default=0, nullable=False)
+    last_analysis_at = db.Column(db.DateTime)
+    last_reply_at = db.Column(db.DateTime)
+    last_error = db.Column(db.Text, default='')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class AIMessage(db.Model):
+    __tablename__ = 'ai_messages'
+    __table_args__ = (db.UniqueConstraint('agent_id', 'message_id'),)
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey('ai_agents.id'), nullable=False, index=True)
+    message_id = db.Column(db.Integer, nullable=False)
+    user_id = db.Column(db.String(50), default='')
+    text = db.Column(db.Text, default='')
+    fingerprint = db.Column(db.String(64), nullable=False)
+    is_ai = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+
+class AIUserContext(db.Model):
+    __tablename__ = 'ai_user_context'
+    __table_args__ = (db.UniqueConstraint('agent_id', 'user_id'),)
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey('ai_agents.id'), nullable=False)
+    user_id = db.Column(db.String(50), nullable=False)
+    language = db.Column(db.String(30), default='UNKNOWN')
+    greeted = db.Column(db.Boolean, default=False)
+    last_reply_at = db.Column(db.DateTime)
+    last_intent = db.Column(db.String(40), default='UNKNOWN')
+
+
+class AIFact(db.Model):
+    __tablename__ = 'ai_facts'
+    __table_args__ = (db.UniqueConstraint('agent_id', 'source_key'),)
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey('ai_agents.id'), nullable=False, index=True)
+    source_key = db.Column(db.String(160), nullable=False)
+    source_url = db.Column(db.String(500), nullable=False)
+    source_message_id = db.Column(db.Integer)
+    related_id = db.Column(db.Integer, db.ForeignKey('ai_facts.id'))
+    title = db.Column(db.String(200), default='')
+    summary = db.Column(db.Text, default='')
+    code = db.Column(db.String(100), default='')
+    status = db.Column(db.String(20), default='UNKNOWN')
+    end_at = db.Column(db.DateTime)
+    approved = db.Column(db.Boolean, default=False)
+    deleted = db.Column(db.Boolean, default=False)
+    fingerprint = db.Column(db.String(64), default='')
+    revision = db.Column(db.Integer, default=0, nullable=False)
+    verified_at = db.Column(db.DateTime)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    history = db.relationship('AIFactHistory', backref='fact', cascade='all, delete-orphan')
+
+
+class AIFactHistory(db.Model):
+    __tablename__ = 'ai_fact_history'
+    id = db.Column(db.Integer, primary_key=True)
+    fact_id = db.Column(db.Integer, db.ForeignKey('ai_facts.id'), nullable=False)
+    snapshot = db.Column(db.JSON, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class AIDecision(db.Model):
+    __tablename__ = 'ai_decisions'
+    __table_args__ = (db.UniqueConstraint('agent_id', 'message_id', 'fingerprint'),)
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey('ai_agents.id'), nullable=False, index=True)
+    agent = db.relationship('AIAgent')
+    message_id = db.Column(db.Integer, nullable=False)
+    user_id = db.Column(db.String(50), default='')
+    fingerprint = db.Column(db.String(64), nullable=False)
+    agent_revision = db.Column(db.Integer, nullable=False)
+    knowledge_revision = db.Column(db.Integer, nullable=False)
+    language = db.Column(db.String(30), default='UNKNOWN')
+    intent = db.Column(db.String(40), default='UNKNOWN')
+    confidence = db.Column(db.Float, default=0)
+    action = db.Column(db.String(20), default='HUMAN_REVIEW')
+    classification = db.Column(db.String(30), default='UNKNOWN')
+    reply = db.Column(db.Text, default='')
+    reason = db.Column(db.Text, default='')
+    fact_ids = db.Column(db.JSON, default=list)
+    has_image = db.Column(db.Boolean, default=False)
+    state = db.Column(db.String(20), default='ANALYZING', nullable=False, index=True)
+    result = db.Column(db.Text, default='')
+    model = db.Column(db.String(100), default='')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    completed_at = db.Column(db.DateTime)
+
+
 class Settings(db.Model):
     """全局系统设置（key-value 键值对）"""
     __tablename__ = 'settings'

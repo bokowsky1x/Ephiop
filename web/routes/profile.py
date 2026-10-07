@@ -5,18 +5,18 @@ import secrets
 
 from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, send_file, session, url_for
 from PIL import Image, UnidentifiedImageError
-from telethon import errors, functions, utils
+from telethon import errors, functions, types, utils
 
 from models import Account, db
 
 profile_bp = Blueprint('profile', __name__)
 
 
-def run(coroutine):
+def run(coroutine, timeout=35):
     manager = current_app.telegram_manager
-    future = manager.submit(asyncio.wait_for(coroutine, 35))
+    future = manager.submit(asyncio.wait_for(coroutine, timeout))
     try:
-        return future.result(timeout=40)
+        return future.result(timeout=timeout + 5)
     except Exception:
         future.cancel()
         raise
@@ -48,10 +48,13 @@ def error_message(exc):
     return 'Telegram не выполнил запрос. Обновите страницу и повторите позже.'
 
 
-async def read_profile(client):
-    full = await client(functions.users.GetFullUserRequest('me'))
-    user = next(user for user in full.users if user.id == full.full_user.id)
-    return dict(first_name=user.first_name or '', last_name=user.last_name or '',
+async def read_profile(client, flood_sleep_threshold=None):
+    options = {} if flood_sleep_threshold is None else {'flood_sleep_threshold': flood_sleep_threshold}
+    full = await client(functions.users.GetFullUserRequest(types.InputUserSelf()), **options)
+    user = next((user for user in full.users if user.id == full.full_user.id), None)
+    if user is None:
+        raise ValueError('Telegram не вернул профиль текущего аккаунта. Обновите данные.')
+    return dict(user_id=user.id, first_name=user.first_name or '', last_name=user.last_name or '',
                 username=user.username or '', about=full.full_user.about or '',
                 has_photo=bool(user.photo), about_limit=140 if user.premium else 70)
 
@@ -77,16 +80,24 @@ def prepare_photo(upload):
 
 
 async def update(client, action, data, photo=None):
-    if action == 'details':
-        first_name = data.get('first_name', '').strip()
-        last_name = data.get('last_name', '').strip()
-        about = data.get('about', '').strip()
-        if not first_name or len(first_name) > 64 or len(last_name) > 64:
-            raise ValueError('Укажите имя. Имя и фамилия должны быть не длиннее 64 символов')
-        profile = await read_profile(client)
-        if len(about) > profile['about_limit']:
-            raise ValueError(f'Описание должно быть не длиннее {profile["about_limit"]} символов')
-        await client(functions.account.UpdateProfileRequest(first_name=first_name, last_name=last_name, about=about))
+    if action in ('details', 'about'):
+        changes = {}
+        if action == 'details':
+            first_name = data.get('first_name', '').strip()
+            last_name = data.get('last_name', '').strip()
+            if not first_name or len(first_name) > 64 or len(last_name) > 64:
+                raise ValueError('Укажите имя. Имя и фамилия должны быть не длиннее 64 символов')
+            changes.update(first_name=first_name, last_name=last_name)
+        # Legacy forms may still submit the bio together with the name.
+        if action == 'about' or 'about' in data:
+            about = data.get('about', '').strip()
+            profile = await read_profile(client)
+            if len(about.encode('utf-16-le')) // 2 > profile['about_limit']:
+                raise ValueError(f'Описание должно быть не длиннее {profile["about_limit"]} символов')
+            changes['about'] = about
+        await client(functions.account.UpdateProfileRequest(**changes))
+    elif action == 'delete_about':
+        await client(functions.account.UpdateProfileRequest(about=''))
     elif action == 'username':
         username = data.get('username', '').strip().removeprefix('@')
         profile = await read_profile(client)
@@ -127,7 +138,7 @@ def edit(account_id):
                 client = connected_client(account_id)
                 photo = prepare_photo(request.files.get('photo')) if action == 'photo' else None
                 run(update(client, action, request.form.to_dict(), photo))
-            flash('Изменения сохранены', 'success')
+            flash({'about': 'Описание сохранено', 'delete_about': 'Описание удалено'}.get(action, 'Изменения сохранены'), 'success')
             return redirect(url_for('profile.edit', account_id=account_id))
         except Exception as exc:
             db.session.rollback()
@@ -138,7 +149,7 @@ def edit(account_id):
     except Exception as exc:
         if request.method == 'GET':
             flash(error_message(exc), 'warning')
-    return render_template('account_profile.html', account=account, profile=profile, csrf_token=token)
+    return render_template('account_profile.html', account=account, profile=profile, csrf_token=token), 200, {'Cache-Control': 'no-store'}
 
 
 @profile_bp.get('/<int:account_id>/profile/photo')

@@ -1,0 +1,75 @@
+{% extends 'base.html' %}
+{% block title %}Выбранные профили - Ephiop{% endblock %}
+{% block page_title %}Выбранные профили{% endblock %}
+{% block content %}
+<style>
+  .bulk-preview-table { min-width:650px; table-layout:fixed; }
+  @media (max-width:767px) {
+    .bulk-preview-table { min-width:0; }
+    .bulk-preview-table thead { display:none; }
+    .bulk-preview-table tbody { display:block; }
+    .bulk-preview-table tbody tr { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; border-bottom:1px solid #dee2e6; padding:12px 0; }
+    .bulk-preview-table td { display:block; width:auto; border:0; padding:4px 8px; }
+    .bulk-preview-table td:first-child, .bulk-preview-table td:last-child { grid-column:1 / -1; }
+    .bulk-preview-table td:nth-child(2)::before, .bulk-preview-table td:nth-child(3)::before { content:attr(data-label); display:block; color:#6c757d; font-size:12px; margin-bottom:6px; }
+  }
+</style>
+<a class="btn btn-outline-secondary mb-4" href="{{ url_for('accounts.index') }}"><i class="bi bi-arrow-left me-1"></i>Аккаунты</a>
+<form id="bulk-profile-form" data-csrf="{{ csrf_token }}" data-preview-url="{{ url_for('bulk_profile.preview') }}" data-base-url="{{ url_for('bulk_profile.index') }}">
+  <fieldset class="border-bottom pb-4 mb-4">
+    <legend class="fs-6 fw-semibold">Аккаунты <span id="selected-count" class="badge bg-secondary">0</span></legend>
+    <div class="form-check mb-3"><input type="checkbox" class="form-check-input" id="select-all"><label class="form-check-label" for="select-all">Выбрать все</label></div>
+    <div class="row g-2" style="max-height:240px;overflow-y:auto">
+      {% for account in accounts %}
+      <div class="col-md-4 col-sm-6"><div class="form-check">
+        <input type="checkbox" class="form-check-input account-check" id="account-{{ account.id }}" value="{{ account.id }}" {{ 'checked' if account.id in selected else '' }}>
+        <label class="form-check-label text-break" for="account-{{ account.id }}">{{ account.name }} <span class="text-muted small">#{{ account.id }}</span></label>
+      </div></div>
+      {% else %}<p class="text-muted">Нет авторизованных аккаунтов</p>{% endfor %}
+    </div>
+  </fieldset>
+  <div class="row g-4 border-bottom pb-4 mb-4">
+    <fieldset class="col-lg-6">
+      <legend class="fs-6 fw-semibold">Имя и фамилия</legend>
+      <label for="name-mode" class="form-label">Действие</label>
+      <select id="name-mode" class="form-select mb-3"><option value="keep">Оставить без изменений</option><option value="ai">Создать имена через AI</option></select>
+      <div id="name-fields" hidden>
+        <label for="name-prompt" class="form-label">Промпт для имён</label>
+        <textarea id="name-prompt" class="form-control mb-3" rows="4" maxlength="4000" placeholder="Типичные имена для Эфиопии, на амхарском. Разные имена и фамилии."></textarea>
+        <div class="form-check"><input type="checkbox" class="form-check-input" id="sync-labels"><label class="form-check-label" for="sync-labels">Также обновить названия в панели</label></div>
+      </div>
+    </fieldset>
+    <fieldset class="col-lg-6">
+      <legend class="fs-6 fw-semibold">О себе</legend>
+      <label for="about-mode" class="form-label">Действие</label>
+      <select id="about-mode" class="form-select mb-3"><option value="keep">Оставить без изменений</option><option value="clear">Удалить описание</option><option value="text">Заменить одинаковым текстом</option><option value="ai">Создать описания через AI</option></select>
+      <div id="about-text-fields" hidden><label for="about-text" class="form-label">Новое описание</label><textarea id="about-text" class="form-control mb-3" rows="3" maxlength="4000"></textarea></div>
+      <div id="about-ai-fields" hidden><label for="about-prompt" class="form-label">Промпт для описаний</label><textarea id="about-prompt" class="form-control mb-3" rows="3" maxlength="4000" placeholder="Короткое описание сообщества на русском, разные формулировки."></textarea></div>
+      <div id="about-link-fields" hidden><label for="about-url" class="form-label">Ссылка (необязательно)</label><input type="url" class="form-control" id="about-url" maxlength="4000" placeholder="https://t.me/community"></div>
+    </fieldset>
+  </div>
+  <div class="d-flex gap-3 align-items-center flex-wrap mb-4">
+    <button type="submit" id="preview-button" class="btn btn-outline-primary"><i class="bi bi-eye me-1"></i>Предпросмотр</button>
+    <button type="button" id="apply-button" class="btn btn-primary" disabled><i class="bi bi-check2-all me-1"></i>Применить</button>
+    <span id="bulk-progress" class="text-muted small" role="status" aria-live="polite"></span>
+  </div>
+  <div id="apply-confirmation" class="border border-warning rounded p-3 mb-4" hidden>
+    <p class="mb-3" id="confirmation-text"></p>
+    <div class="d-flex gap-2 flex-wrap">
+      <button id="confirm-apply" type="button" class="btn btn-primary"><i class="bi bi-check2 me-1"></i>Подтвердить сохранение</button>
+      <button id="cancel-apply" type="button" class="btn btn-outline-secondary"><i class="bi bi-x me-1"></i>Отмена</button>
+    </div>
+  </div>
+</form>
+<div id="bulk-error" class="alert alert-danger text-break" role="alert" hidden></div>
+<section id="preview-section" hidden>
+  <h2 class="fs-6 fw-semibold mb-3">Изменения профилей</h2>
+  <div class="table-responsive">
+    <table class="table align-middle bulk-preview-table">
+      <thead><tr><th style="width:18%">Аккаунт</th><th style="width:30%">Сейчас</th><th style="width:30%">После сохранения</th><th style="width:22%">Результат</th></tr></thead>
+      <tbody id="preview-rows"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/bulk_profile.js') }}"></script>{% endblock %}

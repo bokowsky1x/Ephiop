@@ -19,7 +19,12 @@ def create_app(telegram_manager=None):
 
     with app.app_context():
         db.create_all()
+        from models import AIDecision
+        AIDecision.query.filter_by(state='RUNNING').update({'state': 'UNCERTAIN', 'result': 'Процесс прерван. Проверьте Telegram; автоматического повтора нет'})
+        AIDecision.query.filter_by(state='ANALYZING').update({'state': 'REVIEW', 'result': 'Анализ прерван. Требуется ручная проверка'})
         from sqlalchemy import inspect, text
+        if 'related_id' not in {column['name'] for column in inspect(db.engine).get_columns('ai_facts')}:
+            db.session.execute(text('ALTER TABLE ai_facts ADD COLUMN related_id INTEGER'))
         task_columns = {column['name'] for column in inspect(db.engine).get_columns('scheduled_tasks')}
         for name, definition in {
             'once_at': 'DATETIME', 'send_immediately': 'BOOLEAN DEFAULT 0',
@@ -80,6 +85,9 @@ def create_app(telegram_manager=None):
     app.register_blueprint(accounts_bp, url_prefix='/accounts')
     from web.routes.profile import profile_bp
     app.register_blueprint(profile_bp, url_prefix='/accounts')
+    from web.routes.bulk_profile import bulk_profile_bp, init_bulk_profiles
+    init_bulk_profiles(app)
+    app.register_blueprint(bulk_profile_bp, url_prefix='/accounts')
     from web.routes.join import join_bp
     app.register_blueprint(join_bp, url_prefix='/accounts')
     app.register_blueprint(keywords_bp, url_prefix='/keywords')
@@ -89,5 +97,7 @@ def create_app(telegram_manager=None):
     app.register_blueprint(targets_bp, url_prefix='/targets')
     app.register_blueprint(queue_bp, url_prefix='/queue')
     app.register_blueprint(settings_bp, url_prefix='/settings')
+    from web.routes.assistant import assistant_bp
+    app.register_blueprint(assistant_bp, url_prefix='/assistant')
 
     return app

@@ -21,6 +21,26 @@ class TelegramManager:
         self._trigger_modes: Dict = {}   # account_id|'__global__' -> set of trigger_mode strings
         self.scheduler = None
         self.app = None   # Flask app，由外部注入
+        self.ai_assistant = None
+
+    def assistant(self):
+        if self.ai_assistant is None:
+            from ai_assistant import AIAssistant
+            self.ai_assistant = AIAssistant(self)
+        return self.ai_assistant
+
+    async def _handle_ai_event(self, account_id, client, event):
+        try:
+            assistant = self.assistant()
+            channel = await assistant.handle_channel_post(account_id, client, event)
+            chat = await assistant.handle_message(account_id, client, event)
+            return channel or chat
+        except Exception:
+            logger.error('AI-анализ не завершён; автоматические действия пропущены')
+            # Do not fall back to keyword replies in a chat assigned to an active AI.
+            with self.app.app_context():
+                from models import AIAgent
+                return AIAgent.query.filter_by(account_id=account_id, chat_id=str(event.chat_id)).filter(AIAgent.mode != 'OFF').first() is not None
 
     # ------------------------------------------------------------------
     # 启动 / 停止
@@ -128,6 +148,17 @@ class TelegramManager:
             async def _on_message(event):
                 await self._handle_incoming_message(account_id, client, event)
 
+            @client.on(events.MessageEdited(incoming=True))
+            async def _on_edit(event):
+                await self._handle_ai_event(account_id, client, event)
+
+            @client.on(events.MessageDeleted())
+            async def _on_delete(event):
+                try:
+                    await self.assistant().handle_deleted(account_id, event)
+                except Exception:
+                    logger.error('AI: не удалось обработать удаление сообщения')
+
             self.clients[account_id] = client
             logger.info(f'Аккаунт {phone} подключён')
 
@@ -156,6 +187,8 @@ class TelegramManager:
         - all_messages: 所有收到的消息
         """
         try:
+            if await self._handle_ai_event(account_id, client, event):
+                return
             msg = event.message
             is_reply_to_me = False
             is_mentioned = False

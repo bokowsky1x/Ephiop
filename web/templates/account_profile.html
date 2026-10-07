@@ -2,7 +2,10 @@
 {% block title %}Профиль - {{ account.name }}{% endblock %}
 {% block page_title %}Профиль: {{ account.name }}{% endblock %}
 {% block content %}
-<a class="btn btn-outline-secondary mb-4" href="{{ url_for('accounts.index') }}"><i class="bi bi-arrow-left"></i> Аккаунты</a>
+<div class="d-flex flex-wrap gap-2 mb-4">
+  <a class="btn btn-outline-secondary" href="{{ url_for('accounts.index') }}"><i class="bi bi-arrow-left"></i> Аккаунты</a>
+  <a class="btn btn-outline-secondary" href="{{ url_for('profile.edit', account_id=account.id) }}" title="Загрузить актуальный профиль из Telegram"><i class="bi bi-arrow-clockwise"></i> Обновить из Telegram</a>
+</div>
 {% macro token(action) %}
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <input type="hidden" name="action" value="{{ action }}">
@@ -17,10 +20,20 @@
       <input id="first-name" class="form-control mb-3" name="first_name" maxlength="64" required value="{{ request.form.get('first_name', profile.first_name) if request.form.get('action') == 'details' else profile.first_name }}">
       <label class="form-label" for="last-name">Фамилия</label>
       <input id="last-name" class="form-control mb-3" name="last_name" maxlength="64" value="{{ request.form.get('last_name', profile.last_name) if request.form.get('action') == 'details' else profile.last_name }}">
-      <label class="form-label" for="about">О себе</label>
-      <textarea id="about" class="form-control mb-3" name="about" rows="3" maxlength="{{ profile.about_limit }}">{{ request.form.get('about', profile.about) if request.form.get('action') == 'details' else profile.about }}</textarea>
-      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> Сохранить профиль</button>
+      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> Сохранить имя и фамилию</button>
     </form>
+    <form method="post" class="border-top pt-3 mb-3">
+      {{ token('about') }}
+      <label class="form-label" for="about">О себе</label>
+      <textarea id="about" class="form-control mb-3" name="about" rows="3" maxlength="{{ profile.about_limit }}" placeholder="Описание не задано">{{ request.form.get('about', profile.about) if request.form.get('action') in ('details', 'about') else profile.about }}</textarea>
+      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> Сохранить описание</button>
+    </form>
+    {% if profile.about %}
+    <form method="post" class="mb-4" onsubmit="return confirm('Удалить описание «О себе» из Telegram?')">
+      {{ token('delete_about') }}
+      <button class="btn btn-outline-danger"><i class="bi bi-trash"></i> Удалить описание</button>
+    </form>
+    {% endif %}
     <form method="post" class="border-top pt-3 mb-4">
       {{ token('username') }}
       <label class="form-label" for="username">Имя пользователя (@username)</label>

@@ -298,6 +298,10 @@ def toggle(account_id):
 def delete(account_id):
     account = Account.query.get_or_404(account_id)
     manager = current_app.telegram_manager
+    from models import AIDecision, AIAgent
+    if AIDecision.query.filter_by(state='RUNNING').filter(AIDecision.agent.has(AIAgent.account_id == account_id)).first():
+        flash('Дождитесь завершения действия AI перед удалением аккаунта', 'warning')
+        return redirect(url_for('accounts.index'))
 
     tasks = ScheduledTask.query.filter(db.or_(
         ScheduledTask.account_id == account_id,
@@ -319,6 +323,9 @@ def delete(account_id):
     Keyword.query.filter_by(account_id=account_id).delete(synchronize_session='fetch')
     Whitelist.query.filter_by(account_id=account_id).delete(synchronize_session='fetch')
     MessageLog.query.filter_by(account_id=account_id).update({'account_id': None}, synchronize_session='fetch')
+    for agent in AIAgent.query.filter_by(account_id=account_id).all():
+        agent.mode, agent.account_id = 'OFF', None
+        agent.revision += 1
     db.session.flush()
     db.session.delete(account)
     db.session.commit()
