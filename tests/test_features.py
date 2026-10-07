@@ -115,7 +115,7 @@ class FeaturesTest(unittest.TestCase):
 
     def test_immediate_and_delayed_keyword_images(self):
         client = SimpleNamespace(send_file=AsyncMock(), send_message=AsyncMock())
-        event = SimpleNamespace(get_chat=AsyncMock(return_value=SimpleNamespace(id=123, title='Чат')))
+        event = SimpleNamespace(chat_id=123, get_chat=AsyncMock(return_value=SimpleNamespace(id=123, title='Чат')))
         rule = Keyword(keyword='привет', reply_message='Ответ', image='test.jpg', trigger_mode='all_messages', topic_id=7)
         db.session.add(rule)
         db.session.commit()
@@ -519,9 +519,10 @@ class FeaturesTest(unittest.TestCase):
                 db.session.execute(sa.text('ALTER TABLE accounts DROP COLUMN session_kind'))
                 for column in ('once_at', 'send_immediately', 'revision', 'delivery_state', 'completed_at', 'last_error'):
                     db.session.execute(sa.text(f'ALTER TABLE scheduled_tasks DROP COLUMN {column}'))
-                for column in ('caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image'):
+                for column in ('caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image', 'account_mode', 'last_account_id'):
                     db.session.execute(sa.text(f'ALTER TABLE scheduled_tasks DROP COLUMN {column}'))
                 db.session.execute(sa.text('ALTER TABLE task_images DROP COLUMN caption'))
+                db.session.execute(sa.text('ALTER TABLE task_images DROP COLUMN sent_by_account_id'))
                 db.session.commit()
                 db.engine.dispose()
             for _ in range(2):
@@ -531,9 +532,10 @@ class FeaturesTest(unittest.TestCase):
                     self.assertEqual(Account.query.one().session_kind, 'telethon')
                     for table in ('keywords', 'scheduled_tasks', 'pending_replies'):
                         self.assertIn('image', {column['name'] for column in sa.inspect(db.engine).get_columns(table)})
-                    self.assertTrue({'caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image'} <=
+                    self.assertTrue({'caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image', 'account_mode', 'last_account_id'} <=
                                     {column['name'] for column in sa.inspect(db.engine).get_columns('scheduled_tasks')})
                     self.assertIn('caption', {column['name'] for column in sa.inspect(db.engine).get_columns('task_images')})
+                    self.assertIn('sent_by_account_id', {column['name'] for column in sa.inspect(db.engine).get_columns('task_images')})
                     db.session.remove()
                     db.engine.dispose()
 

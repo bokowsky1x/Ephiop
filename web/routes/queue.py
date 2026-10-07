@@ -75,7 +75,7 @@ def api():
             'type': 'scheduled_task',
             'type_label': 'Задача по расписанию',
             'id': task.id,
-            'account': account_map.get(task.account_id, str(task.account_id)),
+            'account': ', '.join(account.name for account in task.sending_accounts),
             'group_id': task.group_id,
             'group_name': task.group_name or '',
             'topic_id': task.topic_id,
@@ -116,9 +116,11 @@ def delete_items():
                 deleted += 1
         elif item_type == 'scheduled_task':
             task = db.session.get(ScheduledTask, item_id)
+            if not task or task.delivery_state == 'sending':
+                continue
+            task.revision += 1
             if task and task.task_type == 'once':
                 task.is_active = False
-                task.revision += 1
                 task.next_run_at = None
                 deleted += 1
             manager = current_app.telegram_manager
@@ -131,6 +133,9 @@ def delete_items():
                         continue
                     # 用相同的 trigger 重新调度 → 跳过当前执行，直接算下一次
                     manager.scheduler.reschedule_job(job_id, trigger=job.trigger)
+                    job = manager.scheduler.get_job(job_id)
+                    job.modify(args=[manager, task.id, task.revision])
+                    task.next_run_at = job.next_run_time.astimezone(timezone.utc).replace(tzinfo=None)
                     deleted += 1
 
     db.session.commit()

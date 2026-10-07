@@ -106,7 +106,7 @@
                   {% endif %}                  {% if acc.id in connected_ids %}
                   <button type="button" class="btn btn-outline-info"
                           title="Посмотреть группы ID"
-                          onclick="loadDialogs({{ acc.id }}, '{{ acc.name }}')">
+                          onclick="loadDialogs({{ acc.id }}, {{ acc.name|tojson|forceescape }})">
                     <i class="bi bi-list-columns"></i>
                   </button>
                   {% endif %}
@@ -114,7 +114,7 @@
                           title="Расписание аккаунта"
                           onclick="openSchedule(
                             {{ acc.id }},
-                            '{{ acc.name | replace("'", "\\'")|replace('"', '') }}',
+                            {{ acc.name|tojson|forceescape }},
                             {{ 'true' if acc.schedule_enabled else 'false' }},
                             '{{ acc.schedule_start or '18:00' }}',
                             '{{ acc.schedule_end or '08:00' }}'
@@ -129,7 +129,7 @@
                   </form>
                   <form method="post" action="{{ url_for('accounts.delete', account_id=acc.id) }}"
                         class="d-inline"
-                        onsubmit="return confirm('Удалить аккаунт {{ acc.name }} ??')">
+                        onsubmit="return confirm({{ ('Удалить аккаунт ' ~ acc.name ~ '?')|tojson|forceescape }})">
                     <button type="submit" class="btn btn-outline-danger" title="Удалить">
                       <i class="bi bi-trash"></i>
                     </button>
@@ -182,7 +182,7 @@
               <input type="time" name="schedule_end" id="sch_end" class="form-control" value="08:00">
             </div>
           </div>
-          <div class="form-text mt-1">Можно задать интервал через полночь, например 18:00–08:00.</div>
+          <div class="form-text mt-1">Время сервера. Интервал может проходить через полночь.</div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
@@ -224,7 +224,7 @@ let currentAccId = null;
 function loadDialogs(accountId, accountName) {
   currentAccId = accountId;
   document.querySelector('#dialogsModal .modal-title').innerHTML =
-    '<i class="bi bi-list-columns me-1"></i>Группы - ' + accountName;
+    '<i class="bi bi-list-columns me-1"></i>Группы - ' + escapeHtml(accountName);
   document.getElementById('dialogs-loading').classList.remove('d-none');
   document.getElementById('dialogs-error').classList.add('d-none');
   document.getElementById('dialogs-table').classList.add('d-none');
@@ -255,7 +255,7 @@ function loadDialogs(accountId, accountName) {
                </button>`
             : '<span class="text-muted small">Нет тем</span>';
           tr.innerHTML = `
-            <td>${g.name}</td>
+            <td>${escapeHtml(g.name)}</td>
             <td><span class="badge" style="${g.type === 'Channel' ? 'background:#6610f2' : 'background:#0dcaf0;color:#000'}">${g.type === 'Channel' ? 'Канал/Супергруппа' : 'Группа'}</span></td>
             <td>
               <code class="user-select-all px-2 py-1 bg-light rounded" style="cursor:pointer" title="Скопировать"
@@ -306,7 +306,7 @@ function loadTopics(accountId, groupId, btn) {
         html += `<span class="badge bg-primary d-flex align-items-center gap-1" style="cursor:pointer;font-size:.85em"
           onclick="navigator.clipboard.writeText('${t.id}').then(()=>{this.classList.add('bg-success');setTimeout(()=>this.classList.remove('bg-success'),1500)});"
           title="Скопировать ТемаID=${t.id}">
-          <i class="bi bi-chat-square-text"></i> ${t.title} &nbsp;<code class="text-white">#${t.id}</code>
+          <i class="bi bi-chat-square-text"></i> ${escapeHtml(t.title)} &nbsp;<code class="text-white">#${t.id}</code>
         </span>`;
       });
       html += '</div>';
@@ -323,7 +323,7 @@ function loadTopics(accountId, groupId, btn) {
 
 function openSchedule(accId, accName, enabled, start, end) {
   document.querySelector('#scheduleModal .modal-title').innerHTML =
-    '<i class="bi bi-clock-history me-1"></i>Время работы - ' + accName;
+    '<i class="bi bi-clock-history me-1"></i>Время работы - ' + escapeHtml(accName);
   document.getElementById('scheduleForm').action = '/accounts/' + accId + '/schedule';
   document.getElementById('sch_enabled').checked = enabled;
   document.getElementById('sch_start').value = start;

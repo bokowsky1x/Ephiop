@@ -95,12 +95,14 @@ class TelegramManager:
         session_kind: str = 'telethon',
     ):
         """为指定账号启动 Telethon 客户端并注册消息监听"""
-        if account_id in self.clients:
+        previous = self.clients.pop(account_id, None)
+        if previous is not None:
             try:
-                await self.clients[account_id].disconnect()
+                await previous.disconnect()
             except Exception:
                 pass
 
+        client = None
         try:
             if session_kind == 'tdesktop':
                 from opentele2.tl import TelegramClient as DesktopClient
@@ -118,6 +120,7 @@ class TelegramManager:
                     if acc:
                         acc.status = 'error'
                         db.session.commit()
+                await client.disconnect()
                 return
 
             # 注册消息事件处理器
@@ -129,6 +132,11 @@ class TelegramManager:
             logger.info(f'Аккаунт {phone} подключён')
 
         except Exception as e:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
             logger.error(f'Не удалось подключить аккаунт {phone}: {e}')
             with self.app.app_context():
                 from models import db, Account
@@ -311,8 +319,10 @@ class TelegramManager:
                 last_sent_to = {}   # key: (account_id, group_id)  value: datetime
 
                 for reply in due:
+                    from task_scheduler import account_ready
+                    from models import Account
                     client = self.clients.get(reply.account_id)
-                    if client is None:
+                    if not account_ready(self, db.session.get(Account, reply.account_id)):
                         continue
 
                     # ── 同目标间隔保障 ──────────────────────────────────────
@@ -389,4 +399,10 @@ class TelegramManager:
 
     @property
     def connected_accounts(self) -> list:
-        return list(self.clients.keys())
+        return [account_id for account_id, client in self.clients.items() if self.client_connected(client)]
+
+    @staticmethod
+    def client_connected(client):
+        if client is None:
+            return False
+        return bool(client.is_connected()) if hasattr(client, 'is_connected') else True

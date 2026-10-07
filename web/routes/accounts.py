@@ -1,5 +1,5 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify
-from models import db, Account
+from models import db, Account, Keyword, PendingReply, ScheduledTask, Whitelist, MessageLog
 
 accounts_bp = Blueprint('accounts', __name__)
 
@@ -299,9 +299,32 @@ def delete(account_id):
     account = Account.query.get_or_404(account_id)
     manager = current_app.telegram_manager
 
-    manager.submit(manager.disconnect_account(account.id))
+    tasks = ScheduledTask.query.filter(db.or_(
+        ScheduledTask.account_id == account_id,
+        ScheduledTask.participants.any(Account.id == account_id),
+    )).all()
+    running = getattr(manager, '_running_tasks', set()) if manager else set()
+    if any(task.delivery_state in ('sending', 'generating') or task.id in running for task in tasks):
+        flash('Дождитесь завершения текущих отправок перед удалением аккаунта', 'warning')
+        return redirect(url_for('accounts.index'))
+    for task in tasks:
+        remaining = [participant for participant in task.sending_accounts if participant.id != account_id]
+        if remaining:
+            task.participants = remaining
+            task.account = remaining[0]
+            task.revision += 1
+        else:
+            db.session.delete(task)
+    PendingReply.query.filter_by(account_id=account_id).delete(synchronize_session='fetch')
+    Keyword.query.filter_by(account_id=account_id).delete(synchronize_session='fetch')
+    Whitelist.query.filter_by(account_id=account_id).delete(synchronize_session='fetch')
+    MessageLog.query.filter_by(account_id=account_id).update({'account_id': None}, synchronize_session='fetch')
+    db.session.flush()
     db.session.delete(account)
     db.session.commit()
+    if manager:
+        manager.submit(manager.disconnect_account(account_id))
+        manager.submit(manager._reload_scheduled_tasks())
     flash(f'Аккаунт {account.name} удалён', 'success')
     return redirect(url_for('accounts.index'))
 
@@ -315,9 +338,13 @@ def schedule(account_id):
     end = request.form.get('schedule_end', '08:00').strip()
     # 简单格式校验
     import re
-    if re.match(r'^\d{2}:\d{2}$', start):
+    if not all(re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', value) for value in (start, end)):
+        db.session.rollback()
+        flash('Укажите время в формате ЧЧ:ММ от 00:00 до 23:59', 'danger')
+        return redirect(url_for('accounts.index'))
+    if start:
         account.schedule_start = start
-    if re.match(r'^\d{2}:\d{2}$', end):
+    if end:
         account.schedule_end = end
     db.session.commit()
     status = f'{start} \u2013 {end}' if account.schedule_enabled else 'Круглосуточно'

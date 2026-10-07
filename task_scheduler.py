@@ -15,6 +15,20 @@ def utc_naive(value):
     return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
 
 
+def account_ready(manager, account):
+    from message_handler import _is_in_schedule
+    return bool(account and account.is_active and account.status == 'authorized'
+                and manager.client_connected(manager.clients.get(account.id))
+                and (not account.schedule_enabled or _is_in_schedule(account.schedule_start, account.schedule_end)))
+
+
+def next_account(manager, task):
+    accounts = [account for account in task.sending_accounts if account_ready(manager, account)]
+    if not accounts:
+        return None
+    return next((account for account in accounts if account.id > (task.last_account_id or 0)), accounts[0])
+
+
 async def sync_tasks(manager):
     if not manager.scheduler:
         return
@@ -40,8 +54,7 @@ async def sync_tasks(manager):
             if task.id in running:
                 wanted.add(job_id)
                 continue
-            account = db.session.get(Account, task.account_id)
-            if not account or not account.is_active or task.account_id not in manager.clients:
+            if next_account(manager, task) is None:
                 continue
             wanted.add(job_id)
             existing = manager.scheduler.get_job(job_id)
@@ -96,10 +109,10 @@ async def execute_task(manager, task_id, revision):
             task = db.session.get(ScheduledTask, task_id)
             if not task or not task.is_active or task.revision != revision or task.delivery_state != 'ready':
                 return
-            account = db.session.get(Account, task.account_id)
-            client = manager.clients.get(task.account_id)
-            if not client or not account or not account.is_active:
+            account = next_account(manager, task)
+            if account is None:
                 return
+            client = manager.clients[account.id]
             image = task.image
             if task.images:
                 item = TaskImage.query.filter_by(task_id=task.id, state='pending').order_by(TaskImage.id).first()
@@ -110,7 +123,7 @@ async def execute_task(manager, task_id, revision):
                     db.session.commit()
                     return
                 image, image_id = item.filename, item.id
-            account_id, group_id, message, topic_id = task.account_id, task.group_id, task.message, task.topic_id
+            account_id, group_id, message, topic_id = account.id, task.group_id, task.message, task.topic_id
             ai = task.caption_mode == 'ai'
             cached_caption = item.caption if image_id else None
             if ai:
@@ -133,7 +146,7 @@ async def execute_task(manager, task_id, revision):
                     db.session.commit()
                 generating = False
                 return
-            if not db.session.get(Account, account_id).is_active or manager.clients.get(account_id) is not client:
+            if not account_ready(manager, db.session.get(Account, account_id)) or manager.clients.get(account_id) is not client:
                 if generating:
                     task.delivery_state = 'ready'
                     db.session.commit()
@@ -163,6 +176,8 @@ async def execute_task(manager, task_id, revision):
                 item = db.session.get(TaskImage, image_id)
                 if item:
                     item.state, item.sent_at = 'sent', now
+                    item.sent_by_account_id = account_id
+            task.last_account_id = account_id
             task.last_run_at, task.delivery_state, task.last_error = now, 'ready', ''
             exhausted = bool(task.images) and not TaskImage.query.filter_by(task_id=task.id, state='pending').first()
             if task.task_type == 'once' or exhausted:
@@ -183,7 +198,7 @@ async def execute_task(manager, task_id, revision):
                     task.is_active, task.delivery_state, task.next_run_at = False, 'ready', None
                     reason = str(exc) if isinstance(exc, CaptionError) else 'Генерация подписи не завершилась'
                     task.last_error = reason + '. Скриншот не отправлен и остаётся в очереди.'
-                    db.session.add(MessageLog(account_id=task.account_id, group_id=task.group_id,
+                    db.session.add(MessageLog(account_id=account_id, group_id=task.group_id,
                                               log_type='error', content=task.last_error))
                     db.session.commit()
         if reserved:
@@ -197,7 +212,7 @@ async def execute_task(manager, task_id, revision):
                         item = db.session.get(TaskImage, image_id)
                         if item:
                             item.state = 'uncertain'
-                    db.session.add(MessageLog(account_id=task.account_id, group_id=task.group_id,
+                    db.session.add(MessageLog(account_id=account_id, group_id=task.group_id,
                                               log_type='error', content=task.last_error))
                     db.session.commit()
         raise

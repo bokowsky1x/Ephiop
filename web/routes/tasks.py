@@ -10,6 +10,26 @@ from captions import CaptionError, LANGUAGES, generate_caption
 tasks_bp = Blueprint('tasks', __name__)
 
 
+def selected_accounts(form):
+    mode = form.get('account_mode', 'single')
+    if mode == 'all':
+        accounts = Account.query.filter_by(status='authorized', is_active=True).order_by(Account.id).all()
+    else:
+        if mode not in ('single', 'selected'):
+            raise ValueError('Неизвестный режим выбора аккаунтов')
+        values = form.getlist('account_ids') if mode == 'selected' else [form.get('account_id', '')]
+        try:
+            ids = sorted({int(value) for value in values})
+        except (ValueError, TypeError):
+            raise ValueError('Выберите авторизованные аккаунты')
+        accounts = Account.query.filter(Account.id.in_(ids), Account.status == 'authorized').order_by(Account.id).all()
+        if len(accounts) != len(ids):
+            raise ValueError('Один из выбранных аккаунтов не авторизован или удалён')
+    if not accounts:
+        raise ValueError('Выберите хотя бы один авторизованный аккаунт')
+    return mode, accounts
+
+
 def caption_fields(form):
     mode = form.get('caption_mode', 'fixed')
     if mode not in ('fixed', 'ai'):
@@ -34,10 +54,7 @@ def update_fields(task, new=False):
     created_files = []
     try:
         form = request.form
-        account_id = int(form.get('account_id', ''))
-        account = db.session.get(Account, account_id)
-        if not account or account.status != 'authorized':
-            raise ValueError('Выберите авторизованный аккаунт')
+        account_mode, accounts = selected_accounts(form)
         group_id = form.get('group_id', '').strip()
         if not group_id or not group_id.lstrip('-').isdigit():
             raise ValueError('Укажите числовой ID получателя')
@@ -116,7 +133,8 @@ def update_fields(task, new=False):
             raise ValueError('Укажите текст или изображение')
         old_schedule = (task.task_type, task.interval_minutes, task.cron_expression, task.once_at)
         new_schedule = (task_type, interval, cron, once_at)
-        task.account_id, task.group_id = account_id, group_id
+        task.account_id, task.group_id = accounts[0].id, group_id
+        task.account_mode, task.participants = account_mode, accounts
         task.group_name, task.topic_id = form.get('group_name', '').strip(), topic_id
         old_message = task.message
         task.message, task.image = text, image

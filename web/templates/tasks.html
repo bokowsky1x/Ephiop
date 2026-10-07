@@ -13,16 +13,7 @@
       </div>
       <div class="card-body">
         <form enctype="multipart/form-data" method="post" action="{{ url_for('tasks.add') }}" id="task-form">
-          <div class="mb-3">
-            <label class="form-label">Аккаунт <span class="text-danger">*</span></label>
-            <select name="account_id" id="task-account" class="form-select" required
-                    onchange="resolveTarget(null)">
-              <option value="">Выберите аккаунт</option>
-              {% for acc in accounts %}
-              <option value="{{ acc.id }}">{{ acc.name }} ({{ acc.phone }})</option>
-              {% endfor %}
-            </select>
-          </div>
+          {% include "_task_accounts.html" %}
           <div class="mb-2">
             <label class="form-label">Выбрать сохранённого получателя</label>
             <select id="task-target-select" class="form-select form-select-sm"
@@ -106,7 +97,7 @@
             {% for task in tasks %}
             <tr class="{{ '' if task.is_active else 'text-muted' }}">
               <td class="small">
-                {% if task.account %}{{ task.account.name }}{% else %}—{% endif %}
+                {% for acc in task.sending_accounts %}<div>{{ acc.name }}</div>{% else %}—{% endfor %}
               </td>
               <td class="small">
                 <div>{{ task.group_name or '—' }}</div>
@@ -219,8 +210,7 @@ function scheduleDetect() {
   _resolveTimer = setTimeout(() => resolveTarget(null), 700);
 }
 function getAccountId() {
-  const sel = document.getElementById('task-account');
-  return sel ? sel.value : '';
+  return taskAccountForLookup();
 }
 
 async function resolveTarget(preselect) {
@@ -249,7 +239,7 @@ async function resolveTarget(preselect) {
       return;
     }
     const [bgCls, icon, label] = KIND_BADGE[data.kind] || KIND_BADGE.unknown;
-    if (badge) badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}: ${data.name}</span>`;
+    if (badge) badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}: ${escapeHtml(data.name)}</span>`;
     if (hint)  hint.textContent = `Тип:«${label}» (ID: ${data.id})`;
 
     if (data.is_forum) {

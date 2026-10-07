@@ -109,6 +109,10 @@ function barColor(sec) {
 }
 
 function buildRow(item) {
+  item = {...item};
+  ['account', 'group_name', 'group_id', 'message', 'triggered_by', 'task_info', 'random_delay', 'scheduled_at'].forEach(field => {
+    item[field] = escapeHtml(item[field]);
+  });
   const key = item.type + '_' + item.id;
   const sec = item.remaining_seconds;
   const maxSec = maxSeconds[key] || sec || 1;

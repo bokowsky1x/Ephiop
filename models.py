@@ -3,6 +3,12 @@ from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
 
+task_accounts = db.Table(
+    'task_accounts',
+    db.Column('task_id', db.Integer, db.ForeignKey('scheduled_tasks.id'), primary_key=True),
+    db.Column('account_id', db.Integer, db.ForeignKey('accounts.id'), primary_key=True),
+)
+
 
 class Account(db.Model):
     """Telegram账号"""
@@ -109,6 +115,9 @@ class ScheduledTask(db.Model):
     cron_expression = db.Column(db.String(100))
     once_at = db.Column(db.DateTime)
     send_immediately = db.Column(db.Boolean, default=False)
+    account_mode = db.Column(db.String(20), default='single', nullable=False)
+    last_account_id = db.Column(db.Integer)
+    participants = db.relationship('Account', secondary=task_accounts, order_by='Account.id')
     revision = db.Column(db.Integer, default=0, nullable=False)
     delivery_state = db.Column(db.String(20), default='ready', nullable=False)
     completed_at = db.Column(db.DateTime)
@@ -128,10 +137,15 @@ class ScheduledTask(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    @property
+    def sending_accounts(self):
+        return self.participants or ([self.account] if self.account else [])
+
     def to_dict(self):
         return {
             'id': self.id,
             'account_id': self.account_id,
+            'account_ids': [account.id for account in self.sending_accounts],
             'group_id': self.group_id,
             'group_name': self.group_name,
             'message': self.message,
@@ -153,6 +167,7 @@ class TaskImage(db.Model):
     state = db.Column(db.String(20), default='pending', nullable=False)
     sent_at = db.Column(db.DateTime)
     caption = db.Column(db.Text)
+    sent_by_account_id = db.Column(db.Integer)
     __table_args__ = (db.UniqueConstraint('task_id', 'digest'),)
 
 

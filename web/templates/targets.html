@@ -213,7 +213,7 @@ async function resolveTarget() {
     }
 
     const [bgCls, icon, label] = KIND_BADGE[data.kind] || KIND_BADGE.unknown;
-    badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}: ${data.name}</span>`;
+    badge.innerHTML = `<span class="badge ${bgCls}"><i class="bi ${icon} me-1"></i>${label}: ${escapeHtml(data.name)}</span>`;
     hint.textContent = `Тип:«${label}» (ID: ${data.id})`;
 
     // Название определяется автоматически (如果还空)

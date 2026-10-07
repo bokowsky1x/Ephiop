@@ -1,0 +1,47 @@
+{% set editing = task is defined %}
+{% set mode = task.account_mode if editing else 'single' %}
+{% set chosen = task.sending_accounts|map(attribute='id')|list if editing else [] %}
+<div class="mb-3">
+  <label for="task-account-mode" class="form-label">Аккаунты для отправки</label>
+  <select id="task-account-mode" name="account_mode" class="form-select" onchange="switchTaskAccounts()">
+    <option value="single" {{ 'selected' if mode == 'single' }}>Один аккаунт</option>
+    <option value="selected" {{ 'selected' if mode == 'selected' }}>Выбранные аккаунты</option>
+    <option value="all" {{ 'selected' if mode == 'all' }}>Все текущие активные аккаунты</option>
+  </select>
+</div>
+<div id="task-single-account" class="mb-3" {{ 'hidden' if mode != 'single' }}>
+  <label for="task-account" class="form-label">Аккаунт</label>
+  <select id="task-account" name="account_id" class="form-select" onchange="resolveTarget(null)" {{ 'required' if mode == 'single' }} {{ 'disabled' if mode != 'single' }}>
+    <option value="">Выберите аккаунт</option>
+    {% for acc in accounts %}<option value="{{ acc.id }}" {{ 'selected' if editing and task.account_id == acc.id }}>{{ acc.name }} ({{ acc.phone }}){% if not acc.is_active %} — отключён{% endif %}</option>{% endfor %}
+  </select>
+</div>
+<fieldset id="task-selected-accounts" class="mb-3" {{ 'hidden disabled' if mode != 'selected' }}>
+  <legend class="form-label fs-6">Участники</legend>
+  <div style="max-height:220px;overflow:auto">
+    {% for acc in accounts %}
+    <div class="form-check mb-1">
+      <input id="task-participant-{{ acc.id }}" type="checkbox" class="form-check-input" name="account_ids" value="{{ acc.id }}" {{ 'checked' if acc.id in chosen }} onchange="resolveTarget(null)">
+      <label for="task-participant-{{ acc.id }}" class="form-check-label">{{ acc.name }} ({{ acc.phone }}){% if not acc.is_active %} — отключён{% endif %}</label>
+    </div>
+    {% endfor %}
+  </div>
+</fieldset>
+<script>
+function taskAccountForLookup() {
+  const mode = document.getElementById('task-account-mode').value;
+  if (mode === 'single') return document.getElementById('task-account').value;
+  if (mode === 'selected') return document.querySelector('#task-selected-accounts input:checked')?.value || '';
+  return document.querySelector('#task-account option[value]:not([value=""])')?.value || '';
+}
+function switchTaskAccounts() {
+  const mode = document.getElementById('task-account-mode').value;
+  const single = document.getElementById('task-account');
+  document.getElementById('task-single-account').hidden = mode !== 'single';
+  single.disabled = mode !== 'single';
+  single.required = mode === 'single';
+  const selected = document.getElementById('task-selected-accounts');
+  selected.hidden = selected.disabled = mode !== 'selected';
+  resolveTarget(null);
+}
+</script>

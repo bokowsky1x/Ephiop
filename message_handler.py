@@ -184,7 +184,8 @@ async def check_keywords(manager, account_id: int, client, event, msg, replied_m
     except Exception:
         return
 
-    trigger_group_id = str(chat.id)
+    from telethon import utils
+    trigger_group_id = str(getattr(event, 'chat_id', None) or utils.get_peer_id(chat))
     group_name = getattr(chat, 'title', '') or getattr(chat, 'username', '') or trigger_group_id
 
     with manager.app.app_context():

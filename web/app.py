@@ -30,11 +30,15 @@ def create_app(telegram_manager=None):
             'caption_language': "VARCHAR(80) NOT NULL DEFAULT 'ru'",
             'caption_max_chars': 'INTEGER NOT NULL DEFAULT 300',
             'caption_use_image': 'BOOLEAN NOT NULL DEFAULT 0',
+            'account_mode': "VARCHAR(20) NOT NULL DEFAULT 'single'",
+            'last_account_id': 'INTEGER',
         }.items():
             if name not in task_columns:
                 db.session.execute(text(f'ALTER TABLE scheduled_tasks ADD COLUMN {name} {definition}'))
         if 'caption' not in {column['name'] for column in inspect(db.engine).get_columns('task_images')}:
             db.session.execute(text('ALTER TABLE task_images ADD COLUMN caption TEXT'))
+        if 'sent_by_account_id' not in {column['name'] for column in inspect(db.engine).get_columns('task_images')}:
+            db.session.execute(text('ALTER TABLE task_images ADD COLUMN sent_by_account_id INTEGER'))
         if 'session_kind' not in {column['name'] for column in inspect(db.engine).get_columns('accounts')}:
             db.session.execute(text("ALTER TABLE accounts ADD COLUMN session_kind VARCHAR(20) DEFAULT 'telethon'"))
         for table in ('keywords', 'scheduled_tasks', 'pending_replies'):

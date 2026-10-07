@@ -400,13 +400,13 @@ async function resolveTarget(preselect, inputId, acctSelId, badgeId, hintId, top
     const resp = await fetch(`/accounts/${accountId}/resolve/${encodeURIComponent(targetId)}`);
     const data = await resp.json();
     if (data.error) {
-      if (badge) badge.innerHTML = `<span class="badge bg-danger" title="${data.error}"><i class="bi bi-exclamation-triangle me-1"></i>Не удалось определить</span>`;
+      if (badge) badge.innerHTML = `<span class="badge bg-danger" title="${escapeHtml(data.error)}"><i class="bi bi-exclamation-triangle me-1"></i>Не удалось определить</span>`;
       section.style.display = 'none';
       _resetTopicUI(topicLoadId, topicSelWrapId, topicSelId, topicInpWrapId, topicInpId);
       return;
     }
     const [bgCls, icon, label] = KIND_BADGE[data.kind] || KIND_BADGE.unknown;
-    if (badge) badge.innerHTML = `<span class="badge ${bgCls}" title="${data.name}"><i class="bi ${icon} me-1"></i>${label}: ${data.name}</span>`;
+    if (badge) badge.innerHTML = `<span class="badge ${bgCls}" title="${escapeHtml(data.name)}"><i class="bi ${icon} me-1"></i>${label}: ${escapeHtml(data.name)}</span>`;
     if (hint)  hint.textContent = `Тип:«${label}» (ID: ${data.id})`;
 
     // Только каналы/超级群才检测话题
