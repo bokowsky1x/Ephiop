@@ -1,15 +1,16 @@
 import asyncio
+import json
 from datetime import datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from PIL import Image
 
 import test_features as fixtures
 from ai_assistant import AIAssistant, policy
-from ai_engine import analyze, fingerprint, image_content, redact
+from ai_engine import AnalysisError, analyze, ask, failure_message, fingerprint, image_content, redact, schema
 from ai_knowledge import ingest, source_url_allowed, verified_facts, VisibleText
 from models import AIAgent, AIDecision, AIFact, AIMessage, AIUserContext, db
 
@@ -186,12 +187,98 @@ class AssistantTests(unittest.TestCase):
     def test_sensitive_image_deletes_only_with_threshold_permission_and_warning(self):
         self.setup_agent(mode='AUTO', vision=True, allow_delete=True)
         with patch('ai_assistant.image_content', new=AsyncMock(return_value={'type': 'input_image'})):
-            self.handle(self.event(message(photo=SimpleNamespace(id=1))),
+            self.handle(self.event(message(text='', photo=SimpleNamespace(id=1))),
                         decision_result(intent='PAYMENT_DATA', action='DELETE', classification='PAYMENT_DATA', confidence=0.98))
         self.assertEqual(self.telegram.deleted, [1])
         self.assertEqual(self.latest().state, 'DELETED')
         self.assertEqual(AIMessage.query.filter_by(message_id=1).one().text, '[PRIVATE MESSAGE]')
         self.assertEqual(len(self.telegram.sent), 1)
+        self.assertIn('support@betjam.com', self.telegram.sent[0][1])
+        self.assertEqual(self.latest().language, 'AMHARIC')
+
+    def test_receipt_without_caption_warns_in_amharic_even_without_delete_permission(self):
+        self.setup_agent(mode='AUTO', vision=True, allow_delete=False)
+        with patch('ai_assistant.image_content', new=AsyncMock(return_value={'type': 'input_image'})):
+            self.handle(self.event(message(text='', photo=SimpleNamespace(id=1))), decision_result(
+                intent='DEPOSIT_PROBLEM', action='DELETE', classification='PAYMENT_DATA', reply='A transfer was credited.'))
+        self.assertEqual(self.latest().state, 'SENT')
+        self.assertEqual(self.latest().intent, 'PAYMENT_DATA')
+        self.assertEqual(self.latest().language, 'AMHARIC')
+        self.assertEqual(self.latest().action, 'WARN')
+        self.assertFalse(self.telegram.deleted)
+        reply = self.telegram.sent[0][1]
+        self.assertIn('እባክዎ', reply)
+        self.assertIn('support@betjam.com', reply)
+        self.assertNotIn('credited', reply)
+        self.assertNotIn('[PRIVATE]', reply)
+
+    def test_sensitive_warn_does_not_need_generated_reply(self):
+        self.setup_agent(mode='AUTO', vision=True)
+        with patch('ai_assistant.image_content', new=AsyncMock(return_value={'type': 'input_image'})):
+            self.handle(self.event(message(text='', photo=SimpleNamespace(id=1))), decision_result(
+                intent='PAYMENT_DATA', action='WARN', classification='PAYMENT_DATA', reply=''))
+        self.assertEqual(self.latest().state, 'SENT')
+        self.assertIn('support@betjam.com', self.telegram.sent[0][1])
+
+    def test_image_caption_language_is_preserved_and_support_toggle_is_honored(self):
+        self.setup_agent(mode='AUTO', vision=True, support_router=False)
+        with patch('ai_assistant.image_content', new=AsyncMock(return_value={'type': 'input_image'})):
+            self.handle(self.event(message(text='Please help', photo=SimpleNamespace(id=1))), decision_result(
+                intent='PAYMENT_DATA', action='WARN', classification='PAYMENT_DATA'))
+        self.assertEqual(self.latest().language, 'ENGLISH')
+        self.assertNotIn('support@', self.telegram.sent[0][1])
+        self.assertIn('Do not publish', self.telegram.sent[0][1])
+
+    def test_plain_receipt_without_private_data_is_not_deleted(self):
+        self.setup_agent(mode='AUTO', vision=True, allow_delete=True)
+        with patch('ai_assistant.image_content', new=AsyncMock(return_value={'type': 'input_image'})):
+            self.handle(self.event(message(text='', photo=SimpleNamespace(id=1))), decision_result(
+                intent='SIMPLE_REACTION', action='IGNORE', classification='PAYMENT_SCREENSHOT'))
+        self.assertEqual(self.latest().state, 'IGNORED')
+        self.assertFalse(self.telegram.deleted)
+        self.assertFalse(self.telegram.sent)
+
+    def test_image_failure_reports_stage_without_echoing_private_error(self):
+        self.setup_agent(mode='AUTO', vision=True)
+        with patch('ai_assistant.image_content', new=AsyncMock(side_effect=RuntimeError('PRIVATE_RECEIPT_SECRET'))):
+            _, ai = self.handle(self.event(message(text='', photo=SimpleNamespace(id=1))))
+        ai.assert_not_awaited()
+        self.assertIn('Получение изображения', self.latest().result)
+        self.assertIn('RuntimeError', self.latest().result)
+        self.assertNotIn('PRIVATE_RECEIPT_SECRET', self.latest().result)
+        self.assertFalse(self.telegram.sent)
+        self.assertFalse(self.telegram.deleted)
+
+    def test_language_setting_is_validated_and_saved(self):
+        self.setup_agent()
+        self.client.post(f'/assistant/{self.agent.id}', data=self.form(fallback_language='UNKNOWN'))
+        db.session.expire_all()
+        self.assertEqual(self.agent.fallback_language, 'AMHARIC')
+        self.client.post(f'/assistant/{self.agent.id}', data=self.form(fallback_language='OROMO'))
+        db.session.expire_all()
+        self.assertEqual(self.agent.fallback_language, 'OROMO')
+
+    def test_image_pipeline_with_fake_responses_api_sends_privacy_notice(self):
+        self.setup_agent(mode='AUTO', vision=True)
+        self.app.config['OPENAI_MODEL'] = 'gpt-6-luna'
+        image = BytesIO()
+        Image.new('RGB', (20, 20), 'red').save(image, 'PNG')
+        async def download(msg, file, progress_callback):
+            file.write(image.getvalue())
+            progress_callback(len(image.getvalue()), len(image.getvalue()))
+        self.telegram.download_media = download
+        response = SimpleNamespace(status='completed', output_text=json.dumps(decision_result(
+            intent='PAYMENT_DATA', classification='PAYMENT_DATA', action='WARN', reply='')))
+        api, context = AssistantEngineTests().api_client(response)
+        with patch('ai_engine.AsyncOpenAI', return_value=context):
+            asyncio.run(self.assistant.handle_message(self.account_id, self.telegram, self.event(message(text='', photo=SimpleNamespace(id=1)))))
+        db.session.expire_all()
+        self.assertEqual(self.latest().state, 'SENT')
+        self.assertEqual(self.latest().language, 'AMHARIC')
+        self.assertIn('support@betjam.com', self.telegram.sent[0][1])
+        self.assertFalse(self.telegram.deleted)
+        request = api.responses.create.call_args.kwargs
+        self.assertEqual(request['input'][0]['content'][1]['detail'], 'high')
 
     def test_low_confidence_or_no_permissions_does_not_delete(self):
         self.setup_agent(mode='AUTO', allow_delete=True)
@@ -428,7 +515,7 @@ class AssistantTests(unittest.TestCase):
 
     def test_startup_recovers_interrupted_actions_without_retry(self):
         from pathlib import Path
-        from sqlalchemy import inspect
+        from sqlalchemy import inspect, text
         from config import Config
         from web.app import create_app
         with patch.object(Config, 'DATABASE_URL', 'sqlite:///' + (Path(self.temp.name) / 'recovery.db').as_posix()):
@@ -441,6 +528,8 @@ class AssistantTests(unittest.TestCase):
                     db.session.add(AIDecision(agent_id=agent.id, message_id=i, fingerprint=str(i),
                         agent_revision=0, knowledge_revision=0, state=state))
                 db.session.commit()
+                db.session.execute(text('ALTER TABLE ai_agents DROP COLUMN fallback_language'))
+                db.session.commit()
                 db.session.remove()
                 db.engine.dispose()
             for _ in range(2):
@@ -448,6 +537,7 @@ class AssistantTests(unittest.TestCase):
                 with recovered.app_context():
                     self.assertEqual([row.state for row in AIDecision.query.order_by(AIDecision.id)], ['UNCERTAIN', 'REVIEW'])
                     self.assertIn('related_id', {row['name'] for row in inspect(db.engine).get_columns('ai_facts')})
+                    self.assertEqual(AIAgent.query.one().fallback_language, 'AMHARIC')
                     db.session.remove()
                     db.engine.dispose()
 
@@ -488,5 +578,50 @@ class AssistantEngineTests(unittest.TestCase):
         client = SimpleNamespace(download_media=download)
         result = asyncio.run(image_content(client, message(photo=SimpleNamespace(id=1))))
         self.assertTrue(result['image_url'].startswith('data:image/jpeg;base64,'))
+        self.assertEqual(result['detail'], 'high')
         with self.assertRaises(ValueError):
             asyncio.run(image_content(client, message(document=SimpleNamespace(id=2, mime_type='image/png', size=11 * 1024 * 1024))))
+
+    def api_client(self, response=None, error=None):
+        api = SimpleNamespace(responses=SimpleNamespace(create=AsyncMock(return_value=response, side_effect=error)))
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=api)
+        context.__aexit__ = AsyncMock(return_value=False)
+        return api, context
+
+    def test_responses_request_contains_image_and_model_compatible_reasoning(self):
+        response = SimpleNamespace(status='completed', output_text=json.dumps(decision_result()))
+        for model, effort in (('gpt-6-luna', 'none'), ('gpt-6-astra', 'low'), ('gpt-6.1-sol', 'low')):
+            api, context = self.api_client(response)
+            app = SimpleNamespace(config={'OPENAI_API_KEY': 'test-no-network', 'OPENAI_MODEL': model})
+            with patch('ai_engine.AsyncOpenAI', return_value=context):
+                result = asyncio.run(analyze(app, {'preferred_language': 'AMHARIC'}, {'type': 'input_image', 'detail': 'high', 'image_url': 'data:image/jpeg;base64,test'}))
+            self.assertEqual(result['intent'], 'GREETING')
+            request = api.responses.create.call_args.kwargs
+            self.assertEqual(request['reasoning'], {'effort': effort})
+            self.assertFalse(request['store'])
+            self.assertEqual(request['input'][0]['content'][1]['type'], 'input_image')
+            self.assertIn('AMHARIC', request['input'][0]['content'][0]['text'])
+
+    def test_api_errors_have_safe_diagnostics_not_raw_body(self):
+        import httpx
+        from openai import BadRequestError
+        response = httpx.Response(400, request=httpx.Request('POST', 'https://api.openai.com/v1/responses'))
+        error = BadRequestError('PRIVATE_RECEIPT_SECRET', response=response, body={'code': 'invalid_image', 'message': 'PRIVATE_RECEIPT_SECRET'})
+        _, context = self.api_client(error=error)
+        app = SimpleNamespace(config={'OPENAI_API_KEY': 'test-no-network', 'OPENAI_MODEL': 'gpt-6-luna'})
+        with patch('ai_engine.AsyncOpenAI', return_value=context):
+            with self.assertRaises(AnalysisError) as caught:
+                asyncio.run(ask(app, 'test', 'Test', {}, schema({})))
+        result = failure_message(caught.exception, 'Анализ OpenAI')
+        self.assertIn('HTTP 400', result)
+        self.assertIn('изображение', result)
+        self.assertNotIn('PRIVATE_RECEIPT_SECRET', result)
+
+    def test_incomplete_response_reports_token_limit(self):
+        response = SimpleNamespace(status='incomplete', output_text='', incomplete_details=SimpleNamespace(reason='max_output_tokens'))
+        _, context = self.api_client(response)
+        app = SimpleNamespace(config={'OPENAI_API_KEY': 'test-no-network', 'OPENAI_MODEL': 'gpt-6-luna'})
+        with patch('ai_engine.AsyncOpenAI', return_value=context):
+            with self.assertRaisesRegex(AnalysisError, 'лимит ответа'):
+                asyncio.run(ask(app, 'test', 'Test', {}, schema({})))

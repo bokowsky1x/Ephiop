@@ -270,6 +270,7 @@ class AIAgent(db.Model):
     support_router = db.Column(db.Boolean, default=True, nullable=False)
     information = db.Column(db.Boolean, default=True, nullable=False)
     vision = db.Column(db.Boolean, default=False, nullable=False)
+    fallback_language = db.Column(db.String(30), default='AMHARIC', nullable=False)
     scam_detection = db.Column(db.Boolean, default=True, nullable=False)
     allow_delete = db.Column(db.Boolean, default=False, nullable=False)
     reply_confidence = db.Column(db.Float, default=0.70, nullable=False)

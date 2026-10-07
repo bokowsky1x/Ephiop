@@ -3,10 +3,11 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 import re
 import time
+import logging
 
 from telethon import errors
 
-from ai_engine import analyze, fingerprint, image_content, redact
+from ai_engine import AnalysisError, analyze, failure_message, fingerprint, image_content, redact
 from ai_knowledge import ingest, telegram_source, verified_facts, archive
 from models import Account, AIAgent, AIDecision, AIFact, AIMessage, AIUserContext, db
 
@@ -16,6 +17,7 @@ SUPPORT_INTENTS = {'DEPOSIT_PROBLEM', 'WITHDRAWAL_PROBLEM', 'BALANCE_PROBLEM', '
 SCAM_INTENTS = {'SCAM', 'FAKE_AGENT', 'FAKE_SUPPORT'}
 SENSITIVE = {'PERSONAL_DATA', 'PAYMENT_DATA', 'IDENTITY_DOCUMENT'}
 FINAL_STATES = {'SENT', 'DELETED', 'UNCERTAIN', 'RUNNING'}
+logger = logging.getLogger(__name__)
 
 
 def support_reply(language):
@@ -27,14 +29,29 @@ def support_reply(language):
     return texts.get(language, 'I cannot check payment or account status. Please contact support through the official website or support@betjam.com.')
 
 
-def privacy_warning(language):
-    return {'AMHARIC': 'የግል ወይም የክፍያ መረጃ በሕዝብ ቻት ውስጥ አያጋሩ።',
+def privacy_warning(language, payment=False, support=True):
+    warning = {'AMHARIC': 'እባክዎ የግል ወይም የክፍያ መረጃ ያለባቸውን ስክሪንሾቶች በዚህ ቻት አይላኩ።',
             'OROMO': 'Odeeffannoo dhuunfaa yookaan kaffaltii chaatii uummataa keessatti hin qoodinaa.',
             'AMHARIC_LATIN': 'Ye gil weyim ye payment mereja be public chat wist ayasayU.'}.get(
                 language, 'Do not publish personal or payment details in the public chat. Never send money or credentials to people claiming to be support.')
+    if payment and support:
+        contact = {'AMHARIC': 'በገንዘብ ማስገባት ላይ ችግር ካለብዎ፣ ወደ support@betjam.com ይጻፉ።',
+                   'OROMO': 'Rakkoo maallaqa galchuu yoo qabaattan, support@betjam.com irratti barreessaa.',
+                   'AMHARIC_LATIN': 'Birr masgebat lay chigir kale, wede support@betjam.com tsafu.'}.get(
+                       language, 'For a deposit problem, email support@betjam.com.')
+        warning += ' ' + contact
+    return warning
 
 
 def policy(agent, decision, facts):
+    sensitive = decision.classification in SENSITIVE
+    if sensitive:
+        decision.intent = decision.classification
+        decision.reply = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router)
+        if decision.has_image and not agent.vision:
+            return 'REVIEW', 'Изображение требует проверки: Vision отключён'
+        if decision.action == 'DELETE' and not agent.allow_delete:
+            decision.action = 'WARN'
     if decision.intent in {'HOW_TO_REGISTER', 'GAMBLING_INSTRUCTIONS', 'UNKNOWN'}:
         return 'REVIEW', 'Требуется ответ человека'
     if decision.action in {'HUMAN_REVIEW', 'ESCALATE', 'MODERATE'}:
@@ -42,7 +59,6 @@ def policy(agent, decision, facts):
     if decision.action == 'IGNORE' or decision.intent in {'CONTEST_ANSWER', 'SIMPLE_REACTION'}:
         return 'IGNORED', 'Ответ не нужен'
     if decision.action == 'DELETE':
-        sensitive = decision.classification in SENSITIVE
         scam = decision.intent in SCAM_INTENTS and agent.scam_detection
         threshold = agent.vision_confidence if decision.has_image else agent.moderation_confidence
         if not (sensitive or scam) or not agent.allow_delete or (decision.has_image and not agent.vision):
@@ -52,6 +68,8 @@ def policy(agent, decision, facts):
         return 'READY', 'Рекомендовано удаление'
     if decision.action not in {'REPLY', 'WARN'} or decision.confidence < agent.reply_confidence:
         return 'REVIEW', 'Недостаточная уверенность для ответа'
+    if sensitive:
+        return 'READY', 'Предупреждение о персональных данных подготовлено'
     if decision.intent in SUPPORT_INTENTS:
         if not agent.support_router or decision.confidence < 0.75:
             return 'REVIEW', 'Проверка обращения в поддержку'
@@ -134,21 +152,24 @@ class AIAssistant:
         AIDecision.query.filter_by(agent_id=agent.id).filter(AIDecision.created_at < datetime.utcnow() - timedelta(days=30),
             AIDecision.state != 'RUNNING').delete(synchronize_session='fetch')
         db.session.commit()
+        stage = 'Подготовка анализа'
         try:
             window = self.analysis_times[agent.id]
             now = time.monotonic()
             while window and window[0] < now - 60:
                 window.popleft()
             if len(window) >= 12:
-                raise ValueError('Лимит анализа: 12 сообщений в минуту. Требуется ручная проверка')
+                raise AnalysisError('Лимит анализа: 12 сообщений в минуту. Требуется ручная проверка')
             window.append(now)
             image = None
             if has_image:
+                stage = 'Получение изображения из Telegram'
                 if not agent.vision:
-                    raise ValueError('Изображения не анализируются: включите Vision или проверьте вручную')
+                    raise AnalysisError('Изображения не анализируются: включите Vision или проверьте вручную')
                 image = await asyncio.wait_for(image_content(client, message), 20)
             reply = None
             if getattr(message, 'reply_to_msg_id', None):
+                stage = 'Чтение сообщения, на которое ответили'
                 replied = await asyncio.wait_for(event.get_reply_message(), 10)
                 if replied:
                     reply = dict(text=redact(getattr(replied, 'raw_text', None) or getattr(replied, 'text', ''), 3000),
@@ -159,18 +180,30 @@ class AIAssistant:
                 db.session.commit()
                 return
             facts = verified_facts(agent)
+            memory = AIUserContext.query.filter_by(agent_id=agent.id, user_id=user_id).first()
+            known_languages = {'AMHARIC', 'AMHARIC_LATIN', 'OROMO', 'ENGLISH'}
+            preferred_language = memory.language if memory and memory.language in known_languages else agent.fallback_language
+            has_language_hint = bool(re.search(r'[A-Za-z\u1200-\u137F]{2,}', text.replace('[PRIVATE]', '')))
+            if has_image and not has_language_hint:
+                preferred_language = agent.fallback_language
             history = AIMessage.query.filter_by(agent_id=agent.id).filter(AIMessage.message_id != message.id).order_by(AIMessage.created_at.desc()).limit(20).all()
             user_history = AIMessage.query.filter_by(agent_id=agent.id, user_id=user_id).filter(AIMessage.message_id != message.id).order_by(AIMessage.created_at.desc()).limit(5).all()
+            stage = 'Анализ OpenAI'
             result = await analyze(self.manager.app, dict(message=text, reply_to=reply,
+                preferred_language=preferred_language, has_user_language_hint=has_language_hint,
+                permissions=dict(allow_delete=agent.allow_delete, support_router=agent.support_router),
                 recent_messages=[dict(text=row.text, is_ai=row.is_ai) for row in reversed(history)],
                 user_history=[row.text for row in reversed(user_history)], verified_facts=facts,
                 now=datetime.utcnow().isoformat()), image)
             db.session.expire_all()
             for key, value in result.items():
                 setattr(decision, key, value)
+            if decision.language in ('UNKNOWN', 'MIXED') or (has_image and not has_language_hint):
+                decision.language = preferred_language
+            stage = 'Проверка результата анализа'
             decision.reason = redact(decision.reason, 500)
             decision.state, decision.result = policy(agent, decision, verified_facts(agent))
-            decision.reply = redact(decision.reply, 1000) if decision.intent not in SUPPORT_INTENTS else decision.reply
+            decision.reply = redact(decision.reply, 1000) if decision.intent not in SUPPORT_INTENTS | SENSITIVE else decision.reply
             if decision.intent in SENSITIVE or decision.classification in SENSITIVE:
                 record.text = '[PRIVATE MESSAGE]'
             if agent.revision != decision.agent_revision or agent.mode == 'OFF' or not agent.consent:
@@ -182,13 +215,16 @@ class AIAssistant:
             agent.last_analysis_at, agent.last_error = datetime.utcnow(), ''
             db.session.commit()
             if decision.state == 'READY' and agent.mode == 'AUTO':
+                stage = 'Проверка перед действием в Telegram'
                 await self._execute(decision.id)
         except Exception as exc:
             db.session.rollback()
             decision = db.session.get(AIDecision, decision.id)
-            decision.state = 'REVIEW'
-            decision.result = str(exc) if isinstance(exc, ValueError) else 'Анализ не завершён. Действия не выполнялись'
-            agent.last_error = decision.result
+            error = failure_message(exc, stage)
+            logger.warning('AI failure: stage=%s error_type=%s', stage, type(exc).__name__)
+            if decision.state not in FINAL_STATES:
+                decision.state, decision.result = 'REVIEW', error
+            agent.last_error = error
             db.session.commit()
 
     def cooldown(self, agent, decision, memory):
@@ -209,7 +245,7 @@ class AIAssistant:
         with self.manager.app.app_context():
             decision = db.session.get(AIDecision, decision_id)
             if not decision:
-                raise ValueError('Решение не найдено')
+                raise AnalysisError('Решение не найдено')
             agent_id = decision.agent_id
         async with self.locks[agent_id]:
             with self.manager.app.app_context():
@@ -221,25 +257,25 @@ class AIAssistant:
         if decision.state not in ('READY', 'REVIEW'):
             return decision.state
         if not agent or not self.account_ready(agent) or agent.mode not in ('ASSIST', 'AUTO'):
-            raise ValueError('Аккаунт не подключён или режим не разрешает действия')
+            raise AnalysisError('Аккаунт не подключён или режим не разрешает действия')
         if agent.revision != decision.agent_revision or datetime.utcnow() - decision.created_at > timedelta(minutes=15):
             decision.state, decision.result = 'STALE', 'Решение устарело'
             db.session.commit()
             return decision.state
         candidate = action if manual else decision.action
         if candidate not in ('REPLY', 'DELETE', 'WARN'):
-            raise ValueError('Выберите ответ или удаление')
+            raise AnalysisError('Выберите ответ или удаление')
         facts = verified_facts(agent)
         if candidate in ('REPLY', 'WARN'):
             if decision.action not in ('REPLY', 'WARN'):
-                raise ValueError('Нет подготовленного безопасного ответа')
+                raise AnalysisError('Нет подготовленного безопасного ответа')
             if decision.intent in INFO_INTENTS and decision.knowledge_revision != agent.knowledge_revision:
-                raise ValueError('Официальные источники изменились. Нужен новый анализ')
+                raise AnalysisError('Официальные источники изменились. Нужен новый анализ')
             state, reason = policy(agent, decision, facts)
             if state != 'READY':
-                raise ValueError(reason)
+                raise AnalysisError(reason)
         elif not agent.allow_delete:
-            raise ValueError('Удаление сообщений не разрешено в настройках')
+            raise AnalysisError('Удаление сообщений не разрешено в настройках')
         memory = AIUserContext.query.filter_by(agent_id=agent.id, user_id=decision.user_id).first()
         if not memory:
             memory = AIUserContext(agent_id=agent.id, user_id=decision.user_id)
@@ -259,14 +295,14 @@ class AIAssistant:
         if candidate == 'DELETE':
             permissions = await asyncio.wait_for(client.get_permissions(int(agent.chat_id), 'me'), 10)
             if not permissions or not permissions.delete_messages:
-                raise ValueError('У аккаунта нет права удалять сообщения в этом чате')
+                raise AnalysisError('У аккаунта нет права удалять сообщения в этом чате')
         db.session.expire_all()
         if not self.account_ready(agent) or agent.revision != decision.agent_revision:
-            raise ValueError('Настройки изменились. Действие отменено')
+            raise AnalysisError('Настройки изменились. Действие отменено')
         if candidate != 'DELETE' and decision.intent in INFO_INTENTS:
             fresh_ids = {fact['id'] for fact in verified_facts(agent)}
             if decision.knowledge_revision != agent.knowledge_revision or any(value not in fresh_ids for value in decision.fact_ids):
-                raise ValueError('Официальные источники устарели или изменились')
+                raise AnalysisError('Официальные источники устарели или изменились')
         gate = [AIAgent.revision == decision.agent_revision, AIAgent.consent == True,
                 AIAgent.mode.in_(('ASSIST', 'AUTO'))]
         if candidate != 'DELETE' and decision.intent in INFO_INTENTS:
@@ -276,7 +312,7 @@ class AIAssistant:
         ).update({'action': candidate, 'state': 'RUNNING', 'result': 'Выполнение'}, synchronize_session='fetch')
         if not claimed:
             db.session.rollback()
-            raise ValueError('Решение отменено или настройки изменились')
+            raise AnalysisError('Решение отменено или настройки изменились')
         db.session.commit()
         try:
             if candidate == 'DELETE':
@@ -286,8 +322,11 @@ class AIAssistant:
                 db.session.commit()
                 if decision.confidence >= agent.moderation_confidence and not self.cooldown(agent, decision, memory):
                     try:
-                        await asyncio.wait_for(client.send_message(int(agent.chat_id), privacy_warning(decision.language), parse_mode=None, link_preview=False), 15)
+                        warning = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router)
+                        await asyncio.wait_for(client.send_message(int(agent.chat_id), warning, parse_mode=None, link_preview=False), 15)
                         agent.last_reply_at = memory.last_reply_at = datetime.utcnow()
+                        memory.language, memory.last_intent = decision.language, decision.intent
+                        decision.result = 'Сообщение удалено; предупреждение отправлено'
                     except Exception:
                         decision.result = 'Сообщение удалено; предупреждение не подтверждено'
             else:

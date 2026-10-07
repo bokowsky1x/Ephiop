@@ -25,6 +25,8 @@ def create_app(telegram_manager=None):
         from sqlalchemy import inspect, text
         if 'related_id' not in {column['name'] for column in inspect(db.engine).get_columns('ai_facts')}:
             db.session.execute(text('ALTER TABLE ai_facts ADD COLUMN related_id INTEGER'))
+        if 'fallback_language' not in {column['name'] for column in inspect(db.engine).get_columns('ai_agents')}:
+            db.session.execute(text("ALTER TABLE ai_agents ADD COLUMN fallback_language VARCHAR(30) NOT NULL DEFAULT 'AMHARIC'"))
         task_columns = {column['name'] for column in inspect(db.engine).get_columns('scheduled_tasks')}
         for name, definition in {
             'once_at': 'DATETIME', 'send_immediately': 'BOOLEAN DEFAULT 0',

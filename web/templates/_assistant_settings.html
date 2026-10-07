@@ -6,6 +6,7 @@
   <div class="col-md-4"><label class="form-label" for="agent-chat">ID чата</label><input id="agent-chat" name="chat_id" class="form-control" value="{{ agent.chat_id if agent else '' }}" placeholder="-100…" pattern="-\d+" required {{ 'readonly' if agent else '' }}></div>
   <div class="col-md-4"><label class="form-label" for="agent-channel">ID официального канала</label><input id="agent-channel" name="channel_id" class="form-control" value="{{ agent.channel_id if agent else '' }}" placeholder="-100…" pattern="-100\d+"></div>
   <div class="col-md-4"><label class="form-label" for="agent-mode">Режим</label><select id="agent-mode" name="mode" class="form-select">{% for mode in modes %}<option value="{{ mode }}" {{ 'selected' if (agent and agent.mode == mode) or (not agent and mode == 'OFF') else '' }}>{{ mode }}</option>{% endfor %}</select></div>
+  <div class="col-md-6"><label class="form-label" for="agent-language">Язык ответов без подписи</label><select id="agent-language" name="fallback_language" class="form-select">{% for value, label in [('AMHARIC','Амхарский'),('AMHARIC_LATIN','Амхарский латиницей'),('OROMO','Оромо'),('ENGLISH','Английский')] %}<option value="{{ value }}" {{ 'selected' if (agent and agent.fallback_language == value) or (not agent and value == 'AMHARIC') else '' }}>{{ label }}</option>{% endfor %}</select></div>
 </div>
 <fieldset class="border-top mt-4 pt-3">
   <legend class="fs-6 fw-semibold">Разрешения</legend>

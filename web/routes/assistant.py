@@ -65,6 +65,9 @@ def settings(agent):
         if not channel_id.startswith('-100') or len(channel_id) > 20 or channel_id == chat_id:
             raise ValueError('Укажите отдельный официальный канал с ID -100…')
     flags = {flag: data.get(flag) == 'on' for flag in FLAGS}
+    language = data.get('fallback_language', agent.fallback_language or 'AMHARIC')
+    if language not in ('AMHARIC', 'AMHARIC_LATIN', 'OROMO', 'ENGLISH'):
+        raise ValueError('Выберите язык ответов без подписи')
     if mode == 'AUTO' and data.get('auto_confirm') != 'on':
         raise ValueError('Подтвердите автоматические действия для режима AUTO')
     if mode != 'OFF' and (not flags['consent'] or not current_app.config.get('OPENAI_API_KEY')):
@@ -89,6 +92,7 @@ def settings(agent):
             fact.approved = False
         agent.knowledge_revision += 1
     agent.name, agent.mode, agent.chat_id, agent.channel_id, agent.account_id = name, mode, chat_id, channel_id, account.id
+    agent.fallback_language = language
     for key, value in {**flags, **numbers, 'fact_max_age_hours': age}.items():
         setattr(agent, key, value)
     agent.revision = (agent.revision or 0) + 1
