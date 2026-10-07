@@ -514,12 +514,15 @@ class FeaturesTest(unittest.TestCase):
             with legacy.app_context():
                 db.session.add(Account(name='Существующий', phone='+333', api_id=1, api_hash='hash'))
                 db.session.commit()
+                db.session.add(ScheduledTask(account_id=Account.query.one().id, group_id='123',
+                                             message='Legacy caption', task_type='interval', interval_minutes=5))
+                db.session.commit()
                 for table in ('keywords', 'scheduled_tasks', 'pending_replies'):
                     db.session.execute(sa.text(f'ALTER TABLE {table} DROP COLUMN image'))
                 db.session.execute(sa.text('ALTER TABLE accounts DROP COLUMN session_kind'))
                 for column in ('once_at', 'send_immediately', 'revision', 'delivery_state', 'completed_at', 'last_error'):
                     db.session.execute(sa.text(f'ALTER TABLE scheduled_tasks DROP COLUMN {column}'))
-                for column in ('caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image', 'account_mode', 'last_account_id'):
+                for column in ('caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image', 'caption_instructions', 'account_mode', 'last_account_id'):
                     db.session.execute(sa.text(f'ALTER TABLE scheduled_tasks DROP COLUMN {column}'))
                 db.session.execute(sa.text('ALTER TABLE task_images DROP COLUMN caption'))
                 db.session.execute(sa.text('ALTER TABLE task_images DROP COLUMN sent_by_account_id'))
@@ -530,9 +533,11 @@ class FeaturesTest(unittest.TestCase):
                 with migrated.app_context():
                     self.assertEqual(Account.query.one().name, 'Существующий')
                     self.assertEqual(Account.query.one().session_kind, 'telethon')
+                    self.assertEqual(ScheduledTask.query.one().message, 'Legacy caption')
+                    self.assertEqual(ScheduledTask.query.one().caption_instructions, '')
                     for table in ('keywords', 'scheduled_tasks', 'pending_replies'):
                         self.assertIn('image', {column['name'] for column in sa.inspect(db.engine).get_columns(table)})
-                    self.assertTrue({'caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image', 'account_mode', 'last_account_id'} <=
+                    self.assertTrue({'caption_mode', 'caption_language', 'caption_max_chars', 'caption_use_image', 'caption_instructions', 'account_mode', 'last_account_id'} <=
                                     {column['name'] for column in sa.inspect(db.engine).get_columns('scheduled_tasks')})
                     self.assertIn('caption', {column['name'] for column in sa.inspect(db.engine).get_columns('task_images')})
                     self.assertIn('sent_by_account_id', {column['name'] for column in sa.inspect(db.engine).get_columns('task_images')})

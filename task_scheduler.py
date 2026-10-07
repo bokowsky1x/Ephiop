@@ -128,6 +128,7 @@ async def execute_task(manager, task_id, revision):
             cached_caption = item.caption if image_id else None
             if ai:
                 language, limit = task.caption_language, task.caption_max_chars
+                task_instructions = task.caption_instructions
                 source_image = image if task.caption_use_image else None
                 previous = [entry.caption for entry in task.images if entry.state == 'sent' and entry.caption]
                 task.delivery_state = 'generating'
@@ -135,7 +136,8 @@ async def execute_task(manager, task_id, revision):
                 generating = True
         if ai:
             message = cached_caption or await asyncio.wait_for(generate_caption(
-                manager.app, message, language, limit, image=source_image, previous=previous), timeout=80)
+                manager.app, message, language, limit, image=source_image, previous=previous,
+                task_instructions=task_instructions), timeout=80)
         with manager.app.app_context():
             task = db.session.get(ScheduledTask, task_id)
             if not task:

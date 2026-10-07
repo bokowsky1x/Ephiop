@@ -42,12 +42,18 @@ def caption_fields(form):
     limit = int(form.get('caption_max_chars', '300'))
     if not 80 <= limit <= 1000:
         raise ValueError('Длина подписи: от 80 до 1000 символов')
+    instructions = form.get('caption_instructions', '')
+    if not isinstance(instructions, str):
+        raise ValueError('Инструкции для AI должны быть текстом')
+    instructions = instructions.strip()
+    if len(instructions) > 4000:
+        raise ValueError('Инструкции для AI: не более 4000 символов')
     if mode == 'ai':
         if not current_app.config.get('OPENAI_API_KEY'):
             raise ValueError('На сервере не настроен OPENAI_API_KEY')
         if not form.get('message', '').strip() or len(form.get('message', '')) > 4000:
             raise ValueError('Укажите основу текста для AI (до 4000 символов)')
-    return mode, language, limit, form.get('caption_use_image') == 'on'
+    return mode, language, limit, form.get('caption_use_image') == 'on', instructions
 
 
 def update_fields(task, new=False):
@@ -138,9 +144,11 @@ def update_fields(task, new=False):
         task.group_name, task.topic_id = form.get('group_name', '').strip(), topic_id
         old_message = task.message
         task.message, task.image = text, image
-        old_caption_options = (task.caption_mode, task.caption_language, task.caption_max_chars, task.caption_use_image)
+        old_caption_options = (task.caption_mode, task.caption_language, task.caption_max_chars,
+                               task.caption_use_image, task.caption_instructions)
         caption_changed = old_caption_options != caption_options or old_message != text
-        task.caption_mode, task.caption_language, task.caption_max_chars, task.caption_use_image = caption_options
+        (task.caption_mode, task.caption_language, task.caption_max_chars,
+         task.caption_use_image, task.caption_instructions) = caption_options
         if caption_changed:
             for item in task.images:
                 if item.state == 'pending':
@@ -263,9 +271,10 @@ def caption_preview():
         return jsonify(error='Обновите страницу и повторите попытку'), 400
     try:
         fields = {**data, 'caption_mode': 'ai'}
-        _, language, limit, _ = caption_fields(fields)
+        _, language, limit, _, instructions = caption_fields(fields)
         text = asyncio.run(asyncio.wait_for(generate_caption(
-            current_app._get_current_object(), data.get('message', ''), language, limit), timeout=80))
+            current_app._get_current_object(), data.get('message', ''), language, limit,
+            task_instructions=instructions), timeout=80))
         return jsonify(caption=text)
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc)), 400

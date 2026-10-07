@@ -30,6 +30,7 @@ def create_app(telegram_manager=None):
             'caption_language': "VARCHAR(80) NOT NULL DEFAULT 'ru'",
             'caption_max_chars': 'INTEGER NOT NULL DEFAULT 300',
             'caption_use_image': 'BOOLEAN NOT NULL DEFAULT 0',
+            'caption_instructions': "TEXT NOT NULL DEFAULT ''",
             'account_mode': "VARCHAR(20) NOT NULL DEFAULT 'single'",
             'last_account_id': 'INTEGER',
         }.items():

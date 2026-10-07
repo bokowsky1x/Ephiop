@@ -126,6 +126,7 @@ class ScheduledTask(db.Model):
     caption_language = db.Column(db.String(80), default='ru', nullable=False)
     caption_max_chars = db.Column(db.Integer, default=300, nullable=False)
     caption_use_image = db.Column(db.Boolean, default=False, nullable=False)
+    caption_instructions = db.Column(db.Text, default='', nullable=False)
     images = db.relationship('TaskImage', cascade='all, delete-orphan', order_by='TaskImage.id', lazy='select')
     # 随机延迟：在触发时间后额外随机等待 [min, max] 秒，0 表示不启用
     random_delay_min = db.Column(db.Integer, default=0)

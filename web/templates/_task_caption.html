@@ -10,6 +10,10 @@
 </div>
 <div id="caption-options" {{ 'hidden' if mode != 'ai' }}>
   <div class="mb-3">
+    <label for="caption-instructions" class="form-label">Инструкции для AI</label>
+    <textarea id="caption-instructions" name="caption_instructions" class="form-control" rows="5" maxlength="4000" placeholder="Естественный разговорный стиль. Сумму упоминать изредка; валюту брать со скриншота.">{{ task.caption_instructions if editing else '' }}</textarea>
+  </div>
+  <div class="mb-3">
     <label for="caption-language" class="form-label">Язык подписи</label>
     <select id="caption-language" name="caption_language" class="form-select">
       {% for code, label in caption_languages.items() %}
@@ -53,7 +57,8 @@
           csrf_token: {{ caption_csrf|tojson }},
           message: mode.closest('form').querySelector('[name="message"]').value,
           caption_language: language.value, caption_custom_language: custom.value,
-          caption_max_chars: document.getElementById('caption-limit').value
+          caption_max_chars: document.getElementById('caption-limit').value,
+          caption_instructions: document.getElementById('caption-instructions').value
         })
       });
       const data = await response.json();
