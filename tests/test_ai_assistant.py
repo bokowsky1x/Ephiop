@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import closing
 import json
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -10,9 +11,10 @@ from PIL import Image
 
 import test_features as fixtures
 from ai_assistant import AIAssistant, policy
-from ai_engine import AnalysisError, analyze, ask, failure_message, fingerprint, image_content, redact, schema
+from ai_engine import AnalysisError, analysis_resources, analyze, ask, failure_message, fingerprint, image_content, redact, schema
+from ai_health import checks, telegram_checks
 from ai_knowledge import ingest, source_url_allowed, verified_facts, VisibleText
-from models import AIAgent, AIDecision, AIFact, AIMessage, AIUserContext, db
+from models import Account, AIAgent, AIDecision, AIFact, AIFactHistory, AIMessage, AIUserContext, db
 
 
 def message(message_id=1, text='Hi', **kwargs):
@@ -72,6 +74,7 @@ class AssistantTests(unittest.TestCase):
         self.agent = AIAgent(**data)
         db.session.add(self.agent)
         db.session.commit()
+        self.agent_created_at = self.agent.created_at.isoformat()
         self.client.get('/assistant/')
         with self.client.session_transaction() as state:
             self.csrf = state['assistant_csrf']
@@ -106,8 +109,216 @@ class AssistantTests(unittest.TestCase):
                     channel_id='-100456', mode='OBSERVE', consent='on', community_replies='on', support_router='on',
                     information='on', scam_detection='on', reply_confidence='0.7', moderation_confidence='0.9',
                     vision_confidence='0.93', chat_cooldown='45', user_cooldown='120', intent_cooldown='300', fact_max_age_hours='72')
+        data.update(delete_personal_data='on', delete_payment_data='on', delete_identity_documents='on')
         data.update(kwargs)
         return data
+
+    def test_missing_analysis_resource_reports_filename_before_api(self):
+        with patch('ai_engine.Path.read_text', side_effect=FileNotFoundError('private server path')):
+            with self.assertRaisesRegex(AnalysisError, 'prompts/assistant_system.txt') as failure:
+                analysis_resources()
+            self.assertNotIn('private server path', str(failure.exception))
+        with patch('ai_engine.Path.read_text', side_effect=['instructions', FileNotFoundError()]):
+            with self.assertRaisesRegex(AnalysisError, 'data/ethiopia_slang.json'):
+                analysis_resources()
+
+    def test_invalid_analysis_resources_fail_closed(self):
+        for values in (['', '{}'], ['instructions', 'bad json'], ['instructions', '[]'], ['instructions', '{"word": 1}']):
+            with patch('ai_engine.Path.read_text', side_effect=values):
+                with self.assertRaises(AnalysisError):
+                    analysis_resources()
+
+    def test_docker_includes_only_required_dictionary(self):
+        from pathlib import Path
+        rules = (Path(__file__).parents[1] / '.dockerignore').read_text().splitlines()
+        self.assertNotIn('data/', rules)
+        self.assertIn('data/*', rules)
+        self.assertGreater(rules.index('!data/ethiopia_slang.json'), rules.index('data/*'))
+
+    def test_delete_requires_csrf_confirmation_and_off(self):
+        self.setup_agent()
+        endpoint = f'/assistant/{self.agent.id}/delete'
+        self.assertEqual(self.client.post(endpoint, data={'confirm_delete': 'on'}).status_code, 400)
+        self.client.post(endpoint, data={'csrf_token': self.csrf})
+        self.assertEqual(AIAgent.query.count(), 1)
+        self.client.post(endpoint, data={'csrf_token': self.csrf, 'confirm_delete': 'on'})
+        self.assertEqual(AIAgent.query.count(), 1)
+        self.assertEqual(self.client.get(endpoint).status_code, 405)
+
+    def test_delete_cleans_dependencies_and_allows_new_assignment(self):
+        self.setup_agent(mode='OFF')
+        agent_id = self.agent.id
+        fact = self.fact()
+        closing = self.fact(source_key='closing', related_id=fact.id)
+        db.session.add(AIFactHistory(fact_id=fact.id, snapshot={'status': 'ACTIVE'}))
+        db.session.add(AIFactHistory(fact_id=closing.id, snapshot={'status': 'FINISHED'}))
+        db.session.add(AIMessage(agent_id=agent_id, message_id=1, fingerprint='abc'))
+        db.session.add(AIUserContext(agent_id=agent_id, user_id='22'))
+        db.session.add(AIDecision(agent_id=agent_id, message_id=1, fingerprint='abc', agent_revision=0, knowledge_revision=0, state='REVIEW'))
+        db.session.commit()
+        # Production can enforce foreign keys; deletion order must work there too.
+        db.session.execute(db.text('PRAGMA foreign_keys=ON'))
+        self.client.post(f'/assistant/{agent_id}/delete', data={'csrf_token': self.csrf, 'confirm_delete': 'on', 'agent_created_at': self.agent_created_at})
+        db.session.expire_all()
+        for model in (AIAgent, AIDecision, AIMessage, AIUserContext, AIFact, AIFactHistory):
+            self.assertEqual(model.query.count(), 0, model.__name__)
+        self.assertIsNotNone(db.session.get(Account, self.account_id))
+        self.assertFalse(self.telegram.sent)
+        self.assertFalse(self.telegram.deleted)
+        self.client.post('/assistant/add', data=self.form(mode='OFF'))
+        self.assertEqual(AIAgent.query.count(), 1)
+
+    def test_delete_blocks_inflight_analysis_and_actions(self):
+        self.setup_agent(mode='OFF')
+        decision = AIDecision(agent_id=self.agent.id, message_id=1, fingerprint='abc', agent_revision=0, knowledge_revision=0)
+        db.session.add(decision)
+        db.session.commit()
+        for state in ('ANALYZING', 'RUNNING'):
+            decision.state = state
+            db.session.commit()
+            self.client.post(f'/assistant/{self.agent.id}/delete', data={'csrf_token': self.csrf, 'confirm_delete': 'on', 'agent_created_at': self.agent_created_at})
+            self.assertEqual(AIAgent.query.count(), 1)
+            self.assertEqual(AIDecision.query.count(), 1)
+
+    def test_delete_uses_manager_lock(self):
+        self.setup_agent(mode='OFF')
+        self.manager.loop = object()
+        try:
+            with patch('web.routes.assistant.run', side_effect=lambda coroutine, **kwargs: asyncio.run(coroutine)):
+                response = self.client.post(f'/assistant/{self.agent.id}/delete', data={'csrf_token': self.csrf, 'confirm_delete': 'on', 'agent_created_at': self.agent_created_at})
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(AIAgent.query.count(), 0)
+        finally:
+            self.manager.loop = None
+
+    def test_stale_delete_form_cannot_remove_new_assignment(self):
+        self.setup_agent(mode='OFF')
+        self.client.post(f'/assistant/{self.agent.id}/delete', data={
+            'csrf_token': self.csrf, 'confirm_delete': 'on', 'agent_created_at': 'old assignment'})
+        self.assertEqual(AIAgent.query.count(), 1)
+
+    def test_stale_review_form_cannot_execute_recreated_decision(self):
+        self.setup_agent(mode='ASSIST')
+        self.handle()
+        decision = self.latest()
+        self.client.post(f'/assistant/decisions/{decision.id}', data={
+            'csrf_token': self.csrf, 'action': 'REPLY', 'confirm': 'on', 'decision_created_at': 'old decision'})
+        self.assertFalse(self.telegram.sent)
+        with self.assertRaisesRegex(AnalysisError, 'Решение изменилось'):
+            asyncio.run(self.assistant.execute(decision.id, 'REPLY', created_at='old decision'))
+        self.assertFalse(self.telegram.sent)
+
+    def test_queued_event_cannot_run_under_recreated_assignment(self):
+        self.setup_agent(mode='AUTO')
+        from web.routes.assistant import delete_assignment
+        agent_id = self.agent.id
+        async def recreate():
+            lock = self.assistant.locks[agent_id]
+            await lock.acquire()
+            pending = asyncio.create_task(self.assistant.handle_message(self.account_id, self.telegram, self.event()))
+            await asyncio.sleep(0)
+            self.agent.mode = 'OFF'
+            db.session.commit()
+            delete_assignment(agent_id)
+            db.session.add(AIAgent(id=agent_id, account_id=self.account_id, chat_id='-100123', name='New agent',
+                                   mode='AUTO', consent=True, community_replies=True))
+            db.session.commit()
+            lock.release()
+            await pending
+        with patch('ai_assistant.analyze', new=AsyncMock()) as ai:
+            asyncio.run(recreate())
+        ai.assert_not_awaited()
+        self.assertEqual(AIDecision.query.count(), 0)
+
+    def test_existing_database_gets_category_defaults_without_enabling_delete(self):
+        self.setup_agent(mode='OFF', allow_delete=False)
+        from pathlib import Path
+        import sqlite3
+        from config import Config
+        from web.app import create_app
+        agent_id = self.agent.id
+        with db.engine.begin() as connection:
+            for name in ('delete_personal_data', 'delete_payment_data', 'delete_identity_documents'):
+                connection.execute(db.text(f'ALTER TABLE ai_agents DROP COLUMN {name}'))
+        legacy = Path(self.temp.name) / 'legacy.sqlite'
+        with db.engine.connect() as connection, closing(sqlite3.connect(legacy)) as destination:
+            connection.connection.driver_connection.backup(destination)
+        with patch.object(Config, 'DATABASE_URL', 'sqlite:///' + legacy.as_posix()):
+            migrated_app = create_app()
+        with migrated_app.app_context():
+            agent = db.session.get(AIAgent, agent_id)
+            self.assertTrue(agent.delete_personal_data)
+            self.assertTrue(agent.delete_payment_data)
+            self.assertTrue(agent.delete_identity_documents)
+            self.assertFalse(agent.allow_delete)
+            db.session.remove()
+            db.engine.dispose()
+
+    def test_unselected_sensitive_categories_warn_instead_of_delete(self):
+        self.setup_agent(mode='AUTO', allow_delete=True)
+        for classification, flag in [('PERSONAL_DATA', 'delete_personal_data'), ('PAYMENT_DATA', 'delete_payment_data'), ('IDENTITY_DOCUMENT', 'delete_identity_documents')]:
+            setattr(self.agent, flag, False)
+            db.session.commit()
+            self.handle(self.event(message(AIDecision.query.count() + 1)), decision_result(classification=classification, action='DELETE'))
+            self.assertEqual(self.latest().action, 'WARN')
+            self.assertEqual(self.latest().state, 'SENT')
+            self.assertFalse(self.telegram.deleted)
+            self.agent.last_reply_at = None
+            AIUserContext.query.delete()
+            setattr(self.agent, flag, True)
+            db.session.commit()
+
+    def test_category_settings_save_and_render(self):
+        self.setup_agent()
+        form = self.form()
+        form.pop('delete_payment_data')
+        self.client.post(f'/assistant/{self.agent.id}', data=form)
+        db.session.expire_all()
+        self.assertFalse(self.agent.delete_payment_data)
+        self.assertTrue(self.agent.delete_personal_data)
+        page = self.client.get(f'/assistant/{self.agent.id}').get_data(as_text=True)
+        self.assertIn('Диагностика', page)
+        self.assertIn('Категории автоудаления', page)
+        self.assertIn('Удалить назначение ассистента', page)
+        self.assertNotIn('test-only-no-network', page)
+
+    def test_health_reports_resources_offline_and_last_failure(self):
+        self.setup_agent()
+        self.manager.clients.clear()
+        self.agent.last_error = 'Test failure'
+        with patch('ai_health.analysis_resources', side_effect=AnalysisError('Missing dictionary')):
+            result = checks(self.app, self.agent)
+        rows = {row['key']: row for row in result['rows']}
+        self.assertEqual(rows['connection']['state'], 'error')
+        self.assertEqual(rows['resources']['detail'], 'Missing dictionary')
+        self.assertEqual(rows['last_error']['detail'], 'Test failure')
+        self.assertEqual(rows['key']['state'], 'warning')
+
+    def test_telegram_diagnostics_are_read_only_and_expire(self):
+        self.setup_agent(allow_delete=True)
+        self.telegram.can_delete = False
+        with patch('web.routes.assistant.run', side_effect=lambda coroutine, **kwargs: asyncio.run(coroutine)):
+            response = self.client.post(f'/assistant/{self.agent.id}/check', data={'csrf_token': self.csrf})
+        self.assertEqual(response.status_code, 302)
+        with self.client.session_transaction() as state:
+            saved = state['assistant_checks'][str(self.agent.id)]
+        result = checks(self.app, self.agent, saved)
+        rows = {row['key']: row for row in result['rows']}
+        self.assertEqual(rows['membership']['state'], 'ok')
+        self.assertEqual(rows['delete_rights']['state'], 'error')
+        self.assertFalse(self.telegram.sent)
+        self.assertFalse(self.telegram.deleted)
+        saved['at'] = (datetime.utcnow() - timedelta(minutes=6)).isoformat()
+        self.assertIsNone(checks(self.app, self.agent, saved)['checked_at'])
+        saved['at'] = datetime.utcnow().isoformat()
+        saved['revision'] += 1
+        self.assertIsNone(checks(self.app, self.agent, saved)['checked_at'])
+
+    def test_telegram_diagnostics_never_show_raw_error_data(self):
+        client = SimpleNamespace(get_permissions=AsyncMock(side_effect=RuntimeError('secret payment details')), get_messages=AsyncMock())
+        rows = asyncio.run(telegram_checks(client, '-100123', '', True))
+        self.assertEqual(rows[0]['state'], 'error')
+        self.assertNotIn('secret', rows[0]['detail'])
 
     def test_off_and_unassigned_chats_do_not_call_ai(self):
         self.setup_agent(mode='OFF')
@@ -131,11 +342,11 @@ class AssistantTests(unittest.TestCase):
         self.handle()
         decision = self.latest()
         self.assertEqual(decision.state, 'REVIEW')
-        response = self.client.post(f'/assistant/decisions/{decision.id}', data={'csrf_token': self.csrf, 'action': 'REPLY'})
+        response = self.client.post(f'/assistant/decisions/{decision.id}', data={'csrf_token': self.csrf, 'action': 'REPLY', 'decision_created_at': decision.created_at.isoformat()})
         self.assertEqual(response.status_code, 302)
         self.assertFalse(self.telegram.sent)
         with patch('web.routes.assistant.run', side_effect=lambda coroutine, **kwargs: asyncio.run(coroutine)):
-            self.client.post(f'/assistant/decisions/{decision.id}', data={'csrf_token': self.csrf, 'action': 'REPLY', 'confirm': 'on'})
+            self.client.post(f'/assistant/decisions/{decision.id}', data={'csrf_token': self.csrf, 'action': 'REPLY', 'confirm': 'on', 'decision_created_at': decision.created_at.isoformat()})
         db.session.expire_all()
         self.assertEqual(self.latest().state, 'SENT')
         self.assertEqual(len(self.telegram.sent), 1)

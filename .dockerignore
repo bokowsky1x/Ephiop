@@ -20,7 +20,8 @@ Thumbs.db
 .idea/
 .claude/
 .git/
-data/
+data/*
+!data/ethiopia_slang.json
 dist/
 build/
 *.egg-info/

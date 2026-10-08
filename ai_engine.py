@@ -135,9 +135,27 @@ async def ask(app, name, instructions, payload, output_schema, image=None):
         raise AnalysisError('AI вернул неверный формат анализа') from exc
 
 
+def analysis_resources():
+    root = Path(__file__).parent
+    values = []
+    for name in ('prompts/assistant_system.txt', 'data/ethiopia_slang.json'):
+        try:
+            values.append((root / name).read_text(encoding='utf-8'))
+        except (OSError, UnicodeError) as exc:
+            raise AnalysisError(f'Не удалось прочитать {name}. Проверьте файлы сборки на сервере') from exc
+    try:
+        slang = json.loads(values[1])
+        if not values[0].strip() or not isinstance(slang, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in slang.items()):
+            raise ValueError
+    except (ValueError, TypeError) as exc:
+        raise AnalysisError('Повреждены инструкции или словарь AI. Проверьте файлы сборки') from exc
+    return values[0], slang
+
+
 async def analyze(app, payload, image=None):
-    instructions = (Path(__file__).parent / 'prompts' / 'assistant_system.txt').read_text(encoding='utf-8')
-    payload = {**payload, 'slang': json.loads((Path(__file__).parent / 'data' / 'ethiopia_slang.json').read_text(encoding='utf-8'))}
+    instructions, slang = analysis_resources()
+    payload = {**payload, 'slang': slang}
     output_schema = schema(dict(language=enum(LANGUAGES), intent=enum(INTENTS), action=enum(ACTIONS),
                                 confidence=dict(type='number'), classification=enum(CLASSIFICATIONS),
                                 reply=dict(type='string'), reason=dict(type='string'),

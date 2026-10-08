@@ -18,6 +18,8 @@ SCAM_INTENTS = {'SCAM', 'FAKE_AGENT', 'FAKE_SUPPORT'}
 SENSITIVE = {'PERSONAL_DATA', 'PAYMENT_DATA', 'IDENTITY_DOCUMENT'}
 FINAL_STATES = {'SENT', 'DELETED', 'UNCERTAIN', 'RUNNING'}
 logger = logging.getLogger(__name__)
+DELETE_FLAGS = {'PERSONAL_DATA': 'delete_personal_data', 'PAYMENT_DATA': 'delete_payment_data',
+                'IDENTITY_DOCUMENT': 'delete_identity_documents'}
 
 
 def support_reply(language):
@@ -50,7 +52,7 @@ def policy(agent, decision, facts):
         decision.reply = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router)
         if decision.has_image and not agent.vision:
             return 'REVIEW', 'Изображение требует проверки: Vision отключён'
-        if decision.action == 'DELETE' and not agent.allow_delete:
+        if decision.action == 'DELETE' and (not agent.allow_delete or not getattr(agent, DELETE_FLAGS[decision.classification])):
             decision.action = 'WARN'
     if decision.intent in {'HOW_TO_REGISTER', 'GAMBLING_INSTRUCTIONS', 'UNKNOWN'}:
         return 'REVIEW', 'Требуется ответ человека'
@@ -119,10 +121,11 @@ class AIAssistant:
             if getattr(event, 'sender_id', None) in owned_ids - {None}:
                 return True
             agent_id = agent.id
+            created_at = agent.created_at
         async with self.locks[agent_id]:
             with self.manager.app.app_context():
                 agent = db.session.get(AIAgent, agent_id)
-                if not agent or not self.account_ready(agent):
+                if not agent or agent.created_at != created_at or not self.account_ready(agent) or agent.account_id != account_id or agent.chat_id != str(event.chat_id):
                     return True
                 await self._analyze_message(agent, client, event)
         return True
@@ -241,7 +244,7 @@ class AIAssistant:
         ).first()
         return 'Пауза между одинаковыми темами' if last else None
 
-    async def execute(self, decision_id, action=None):
+    async def execute(self, decision_id, action=None, created_at=None):
         with self.manager.app.app_context():
             decision = db.session.get(AIDecision, decision_id)
             if not decision:
@@ -249,6 +252,9 @@ class AIAssistant:
             agent_id = decision.agent_id
         async with self.locks[agent_id]:
             with self.manager.app.app_context():
+                decision = db.session.get(AIDecision, decision_id)
+                if not decision or (created_at is not None and decision.created_at.isoformat() != created_at):
+                    raise AnalysisError('Решение изменилось. Обновите страницу')
                 return await self._execute(decision_id, manual=True, action=action)
 
     async def _execute(self, decision_id, manual=False, action=None):
@@ -353,19 +359,20 @@ class AIAssistant:
             else:
                 decision.state = 'ERROR' if isinstance(exc, errors.RPCError) else 'UNCERTAIN'
                 decision.result = 'Telegram отклонил действие' if decision.state == 'ERROR' else 'Результат не подтверждён. Проверьте Telegram; автоматического повтора нет'
+            agent.last_error = decision.result
             db.session.commit()
         return decision.state
 
     async def handle_channel_post(self, account_id, client, event):
         with self.manager.app.app_context():
             agents = AIAgent.query.filter_by(account_id=account_id, channel_id=str(event.chat_id), consent=True).filter(AIAgent.mode != 'OFF').all()
-            for agent in agents:
-                if not self.account_ready(agent):
-                    continue
-                async with self.locks[agent.id]:
+            targets = [(agent.id, agent.created_at) for agent in agents]
+            for agent_id, created_at in targets:
+                async with self.locks[agent_id]:
                     try:
                         db.session.expire_all()
-                        if not self.account_ready(agent) or agent.account_id != account_id or agent.channel_id != str(event.chat_id):
+                        agent = db.session.get(AIAgent, agent_id)
+                        if not agent or agent.created_at != created_at or not self.account_ready(agent) or agent.account_id != account_id or agent.channel_id != str(event.chat_id):
                             continue
                         text = getattr(event.message, 'raw_text', None) or getattr(event.message, 'text', '') or ''
                         if text:
@@ -373,8 +380,10 @@ class AIAssistant:
                                          telegram_source(agent.channel_id, event.message.id), event.message.id)
                     except Exception:
                         db.session.rollback()
-                        agent.last_error = 'Официальный пост не разобран. Старое подтверждение при редактировании снято'
-                        db.session.commit()
+                        agent = db.session.get(AIAgent, agent_id)
+                        if agent and agent.created_at == created_at:
+                            agent.last_error = 'Официальный пост не разобран. Старое подтверждение при редактировании снято'
+                            db.session.commit()
             return bool(agents)
 
     async def handle_deleted(self, account_id, event):
@@ -382,8 +391,13 @@ class AIAssistant:
             return
         with self.manager.app.app_context():
             agents = AIAgent.query.filter_by(account_id=account_id).all()
-            for agent in agents:
-                async with self.locks[agent.id]:
+            targets = [(agent.id, agent.created_at) for agent in agents]
+            for agent_id, created_at in targets:
+                async with self.locks[agent_id]:
+                    db.session.expire_all()
+                    agent = db.session.get(AIAgent, agent_id)
+                    if not agent or agent.created_at != created_at or agent.account_id != account_id:
+                        continue
                     if str(event.chat_id) == agent.channel_id:
                         for fact in AIFact.query.filter_by(agent_id=agent.id).filter(AIFact.source_message_id.in_(event.deleted_ids)).all():
                             archive(fact)

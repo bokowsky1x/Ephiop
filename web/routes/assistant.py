@@ -6,13 +6,15 @@ from flask import Blueprint, abort, current_app, flash, redirect, render_templat
 from sqlalchemy.exc import IntegrityError
 
 from ai_engine import redact
+from ai_health import checks, telegram_checks
 from ai_knowledge import STATUSES, archive, import_site, ingest, source_url_allowed, telegram_source
-from models import Account, AIAgent, AIDecision, AIFact, AIMessage, db
+from models import Account, AIAgent, AIDecision, AIFact, AIFactHistory, AIMessage, AIUserContext, db
 from web.routes.profile import run
 
 assistant_bp = Blueprint('assistant', __name__)
 MODES = ('OFF', 'OBSERVE', 'ASSIST', 'AUTO')
 FLAGS = ('consent', 'community_replies', 'support_router', 'information', 'vision', 'scam_detection', 'allow_delete')
+DELETE_FLAGS = ('delete_personal_data', 'delete_payment_data', 'delete_identity_documents')
 
 
 def csrf():
@@ -65,6 +67,7 @@ def settings(agent):
         if not channel_id.startswith('-100') or len(channel_id) > 20 or channel_id == chat_id:
             raise ValueError('Укажите отдельный официальный канал с ID -100…')
     flags = {flag: data.get(flag) == 'on' for flag in FLAGS}
+    flags.update({flag: data.get(flag) == 'on' for flag in DELETE_FLAGS})
     language = data.get('fallback_language', agent.fallback_language or 'AMHARIC')
     if language not in ('AMHARIC', 'AMHARIC_LATIN', 'OROMO', 'ENGLISH'):
         raise ValueError('Выберите язык ответов без подписи')
@@ -143,7 +146,8 @@ def edit(agent_id):
         accounts=Account.query.filter_by(status='authorized').all(),
         decisions=query.order_by(AIDecision.id.desc()).limit(100).all(),
         facts=AIFact.query.filter_by(agent_id=agent.id).order_by(AIFact.id.desc()).limit(100).all(),
-        stats=stats, connected=bool(current_app.telegram_manager and agent.account_id in current_app.telegram_manager.connected_accounts))
+        stats=stats, connected=bool(current_app.telegram_manager and agent.account_id in current_app.telegram_manager.connected_accounts),
+        health=checks(current_app, agent, session.get('assistant_checks', {}).get(str(agent.id))))
 
 
 @assistant_bp.post('/<int:agent_id>/stop')
@@ -155,12 +159,95 @@ def stop(agent_id):
     return redirect(url_for('assistant.edit', agent_id=agent.id))
 
 
+@assistant_bp.post('/<int:agent_id>/check')
+def check(agent_id):
+    agent = AIAgent.query.get_or_404(agent_id)
+    try:
+        manager = current_app.telegram_manager
+        client = manager.clients.get(agent.account_id) if manager else None
+        if not client or not manager.client_connected(client):
+            raise ValueError('Аккаунт не подключён к Telegram')
+        revision, account_id = agent.revision, agent.account_id
+        rows = run(telegram_checks(client, agent.chat_id, agent.channel_id, agent.allow_delete), timeout=25)
+        db.session.expire_all()
+        if agent.revision != revision or agent.account_id != account_id:
+            raise ValueError('Настройки изменились во время проверки. Запустите проверку снова')
+        saved = dict(session.get('assistant_checks', {}))
+        saved[str(agent.id)] = dict(revision=revision, account_id=account_id, created_at=agent.created_at.isoformat(),
+                                   at=datetime.utcnow().isoformat(), rows=rows)
+        session['assistant_checks'] = dict(list(saved.items())[-3:])
+        flash('Проверка Telegram завершена. Сообщения не отправлялись и не удалялись.', 'info')
+    except Exception as exc:
+        saved = dict(session.get('assistant_checks', {}))
+        saved.pop(str(agent_id), None)
+        session['assistant_checks'] = saved
+        fail(exc)
+    return redirect(url_for('assistant.edit', agent_id=agent_id))
+
+
+def delete_assignment(agent_id, created_at=None):
+    agent = db.session.get(AIAgent, agent_id)
+    if not agent:
+        raise ValueError('Назначение уже удалено')
+    if created_at is not None and agent.created_at.isoformat() != created_at:
+        raise ValueError('Назначение изменилось. Обновите страницу')
+    if agent.mode != 'OFF':
+        raise ValueError('Сначала выключите ассистента')
+    if AIDecision.query.filter_by(agent_id=agent_id).filter(AIDecision.state.in_(('ANALYZING', 'RUNNING'))).first():
+        raise ValueError('Дождитесь завершения текущего анализа или действия')
+    revision = agent.revision
+    fact_ids = db.session.query(AIFact.id).filter_by(agent_id=agent_id)
+    AIFactHistory.query.filter(AIFactHistory.fact_id.in_(fact_ids)).delete(synchronize_session='fetch')
+    AIFact.query.filter_by(agent_id=agent_id).update({'related_id': None}, synchronize_session='fetch')
+    for model in (AIDecision, AIMessage, AIUserContext, AIFact):
+        model.query.filter_by(agent_id=agent_id).delete(synchronize_session='fetch')
+    if not AIAgent.query.filter_by(id=agent_id, revision=revision, mode='OFF').delete(synchronize_session='fetch'):
+        raise ValueError('Настройки изменились. Удаление отменено')
+    db.session.commit()
+
+
+@assistant_bp.post('/<int:agent_id>/delete')
+def delete(agent_id):
+    agent = AIAgent.query.get_or_404(agent_id)
+    try:
+        if request.form.get('confirm_delete') != 'on':
+            raise ValueError('Подтвердите удаление назначения и его данных')
+        created_at = request.form.get('agent_created_at')
+        if created_at != agent.created_at.isoformat():
+            raise ValueError('Назначение изменилось. Обновите страницу')
+        manager = current_app.telegram_manager
+        if manager and manager.loop is not None:
+            app = current_app._get_current_object()
+            async def remove():
+                async with manager.assistant().locks[agent_id]:
+                    with app.app_context():
+                        try:
+                            delete_assignment(agent_id, created_at)
+                        except Exception:
+                            db.session.rollback()
+                            raise
+            run(remove())
+        else:
+            delete_assignment(agent_id, created_at)
+        saved = dict(session.get('assistant_checks', {}))
+        saved.pop(str(agent_id), None)
+        session['assistant_checks'] = saved
+        flash('Назначение ассистента удалено. Telegram-аккаунт и сообщения в чате сохранены.', 'success')
+        return redirect(url_for('assistant.index'))
+    except Exception as exc:
+        fail(exc)
+    return redirect(url_for('assistant.edit', agent_id=agent_id))
+
+
 @assistant_bp.post('/decisions/<int:decision_id>')
 def review(decision_id):
     decision = AIDecision.query.get_or_404(decision_id)
     agent_id = decision.agent_id
     action = request.form.get('action')
     try:
+        created_at = request.form.get('decision_created_at')
+        if created_at != decision.created_at.isoformat():
+            raise ValueError('Решение изменилось. Обновите страницу')
         if action == 'dismiss':
             AIDecision.query.filter_by(id=decision.id).filter(AIDecision.state.in_(('REVIEW', 'OBSERVED', 'READY'))).update(
                 {'state': 'DISMISSED', 'result': 'Отклонено модератором'}, synchronize_session='fetch')
@@ -173,7 +260,7 @@ def review(decision_id):
                 raise ValueError('Telegram не запущен')
             # Release the route's snapshot before the Telegram loop writes the decision.
             db.session.commit()
-            state = run(manager.assistant().execute(decision.id, action), timeout=65)
+            state = run(manager.assistant().execute(decision.id, action, created_at=created_at), timeout=65)
             flash('Результат: ' + state, 'success' if state in ('SENT', 'DELETED') else 'warning')
         else:
             raise ValueError('Неизвестное действие')

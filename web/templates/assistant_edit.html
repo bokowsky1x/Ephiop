@@ -8,7 +8,17 @@
   <span class="small text-muted">{{ 'В сети' if connected else 'Не в сети' }}</span>
   {% if agent.mode != 'OFF' %}<form method="post" action="{{ url_for('assistant.stop', agent_id=agent.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-outline-danger" type="submit"><i class="bi bi-stop-circle me-1"></i>Выключить</button></form>{% endif %}
 </div>
-{% if agent.last_error %}<div class="alert alert-warning text-break">{{ agent.last_error }}</div>{% endif %}
+<section class="border-bottom pb-4 mb-4" aria-labelledby="health-title">
+  <div class="d-flex gap-3 align-items-center justify-content-between flex-wrap mb-3">
+    <h2 id="health-title" class="fs-6 fw-semibold mb-0">Диагностика <span class="badge bg-{{ 'danger' if health.status == 'error' else 'warning text-dark' }}">{{ 'Есть ошибки' if health.status == 'error' else 'Есть ограничения / непроверенные условия' }}</span></h2>
+    <form method="post" action="{{ url_for('assistant.check', agent_id=agent.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="btn btn-outline-primary"><i class="bi bi-arrow-clockwise me-1"></i>Проверить Telegram</button></form>
+  </div>
+  <dl class="row g-2 small mb-3">
+    {% for row in health.rows %}<dt class="col-md-3">{{ row.title }}</dt><dd class="col-md-9 mb-0 text-break"><span class="badge bg-{{ 'success' if row.state == 'ok' else 'danger' if row.state == 'error' else 'warning text-dark' }} me-2">{{ 'OK' if row.state == 'ok' else 'Ошибка' if row.state == 'error' else 'Внимание' }}</span>{{ row.detail }}</dd>{% endfor %}
+  </dl>
+  <div class="small text-muted text-break">Модель: {{ config.OPENAI_MODEL }} · Последний успешный анализ: {{ agent.last_analysis_at.strftime('%d.%m.%Y %H:%M:%S') ~ ' UTC' if agent.last_analysis_at else 'ещё не было' }}{% if health.checked_at %} · Права проверены: {{ health.checked_at[:19].replace('T',' ') }} UTC{% endif %}</div>
+  {% if health.latest %}<div class="small mt-2 text-break">Последняя обработка: #{{ health.latest.message_id }} · {{ health.latest.created_at.strftime('%d.%m.%Y %H:%M:%S') }} UTC · {{ health.latest.state }} · {{ health.latest.result }}</div>{% endif %}
+</section>
 <details class="border-bottom pb-4 mb-4" {{ 'open' if agent.mode == 'OFF' else '' }}>
   <summary class="fw-semibold">Настройки</summary>
   <form method="post" class="mt-3" style="max-width:1000px">
@@ -73,6 +83,7 @@
   {% if decision.state == 'REVIEW' %}
   <form method="post" action="{{ url_for('assistant.review', decision_id=decision.id) }}" class="mt-3">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="decision_created_at" value="{{ decision.created_at.isoformat() }}">
     {% if agent.mode in ['ASSIST','AUTO'] %}<div class="form-check mb-2"><input id="confirm-{{ decision.id }}" name="confirm" type="checkbox" class="form-check-input"><label class="form-check-label small" for="confirm-{{ decision.id }}">Подтверждаю выбранное действие в Telegram</label></div>{% endif %}
     <div class="d-flex gap-2 flex-wrap">
       {% if agent.mode in ['ASSIST','AUTO'] and decision.reply and decision.action in ['REPLY','WARN'] %}<button class="btn btn-sm btn-primary" name="action" value="REPLY"><i class="bi bi-send me-1"></i>Отправить ответ</button>{% endif %}
@@ -84,4 +95,15 @@
 </section>
 {% else %}<p class="text-muted py-4">Решений пока нет</p>{% endfor %}
 {% endif %}
+<details class="border-top pt-3 mt-4">
+  <summary class="text-danger fw-semibold">Удалить назначение ассистента</summary>
+  <form method="post" action="{{ url_for('assistant.delete', agent_id=agent.id) }}" class="mt-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="agent_created_at" value="{{ agent.created_at.isoformat() }}">
+    <p class="small">Будут удалены настройки, журнал, память пользователей и источники этого ассистента. Telegram-аккаунт и сообщения в чате сохранятся. После удаления можно назначить нового ассистента в этот чат.</p>
+    {% if agent.mode != 'OFF' %}<p class="small text-danger">Сначала выключите ассистента.</p>{% endif %}
+    <div class="form-check mb-3"><input id="confirm-delete-agent" name="confirm_delete" type="checkbox" class="form-check-input" required><label for="confirm-delete-agent" class="form-check-label">Подтверждаю удаление назначения и его данных</label></div>
+    <button type="submit" class="btn btn-outline-danger" {{ 'disabled' if agent.mode != 'OFF' else '' }}><i class="bi bi-trash me-1"></i>Удалить назначение</button>
+  </form>
+</details>
 {% endblock %}
