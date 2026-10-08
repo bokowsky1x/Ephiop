@@ -12,6 +12,12 @@ from models import Account, db
 profile_bp = Blueprint('profile', __name__)
 
 
+class RemovePersonalChannelRequest(functions.account.UpdatePersonalChannelRequest):
+    async def resolve(self, client, utils):
+        # The generated resolver tries to look up InputChannelEmpty as a real peer.
+        return
+
+
 def run(coroutine, timeout=35):
     manager = current_app.telegram_manager
     future = manager.submit(asyncio.wait_for(coroutine, timeout))
@@ -54,9 +60,21 @@ async def read_profile(client, flood_sleep_threshold=None):
     user = next((user for user in full.users if user.id == full.full_user.id), None)
     if user is None:
         raise ValueError('Telegram не вернул профиль текущего аккаунта. Обновите данные.')
+    channel_id = getattr(full.full_user, 'personal_channel_id', None)
+    channel = next((chat for chat in getattr(full, 'chats', []) if chat.id == channel_id), None)
     return dict(user_id=user.id, first_name=user.first_name or '', last_name=user.last_name or '',
                 username=user.username or '', about=full.full_user.about or '',
-                has_photo=bool(user.photo), about_limit=140 if user.premium else 70)
+                has_photo=bool(user.photo), about_limit=140 if user.premium else 70,
+                personal_channel_id=channel_id,
+                personal_channel_title=getattr(channel, 'title', '') or '',
+                personal_channel_username=getattr(channel, 'username', '') or '')
+
+
+async def remove_personal_channel(client):
+    result = await client(RemovePersonalChannelRequest(types.InputChannelEmpty()),
+                          flood_sleep_threshold=0)
+    if result is not True:
+        raise ValueError('Telegram не подтвердил отвязку канала. Обновите профиль перед повтором')
 
 
 def prepare_photo(upload):
@@ -98,6 +116,17 @@ async def update(client, action, data, photo=None):
         await client(functions.account.UpdateProfileRequest(**changes))
     elif action == 'delete_about':
         await client(functions.account.UpdateProfileRequest(about=''))
+    elif action == 'remove_channel':
+        if data.get('confirm_remove_channel') != 'on':
+            raise ValueError('Подтвердите удаление канала из профиля')
+        profile = await read_profile(client, 0)
+        if str(profile['user_id']) != data.get('channel_user_id'):
+            raise ValueError('Сессия аккаунта изменилась. Обновите профиль')
+        if profile['personal_channel_id'] is None:
+            return
+        if str(profile['personal_channel_id']) != data.get('personal_channel_id'):
+            raise ValueError('Канал профиля изменился. Обновите профиль перед удалением')
+        await remove_personal_channel(client)
     elif action == 'username':
         username = data.get('username', '').strip().removeprefix('@')
         profile = await read_profile(client)
@@ -138,7 +167,8 @@ def edit(account_id):
                 client = connected_client(account_id)
                 photo = prepare_photo(request.files.get('photo')) if action == 'photo' else None
                 run(update(client, action, request.form.to_dict(), photo))
-            flash({'about': 'Описание сохранено', 'delete_about': 'Описание удалено'}.get(action, 'Изменения сохранены'), 'success')
+            flash({'about': 'Описание сохранено', 'delete_about': 'Описание удалено',
+                   'remove_channel': 'Канал убран из профиля. Сам канал не удалён.'}.get(action, 'Изменения сохранены'), 'success')
             return redirect(url_for('profile.edit', account_id=account_id))
         except Exception as exc:
             db.session.rollback()

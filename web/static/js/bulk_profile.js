@@ -70,6 +70,11 @@
     if (Object.hasOwn(fields, 'about')) {
       textBlock(cell, profile.about || '(пусто)', 'small mt-1');
     }
+    if (Object.hasOwn(fields, 'personal_channel_id')) {
+      textBlock(cell, profile.personal_channel_id
+        ? 'Канал: ' + (profile.personal_channel_title || '-100' + profile.personal_channel_id)
+        : 'Канал не привязан', 'small mt-1');
+    }
   }
 
   function render() {
@@ -113,6 +118,7 @@
     document.getElementById('preview-section').hidden = true;
     const data = {
       account_ids: selectedIds(), name_mode: nameMode.value, about_mode: aboutMode.value,
+      channel_mode: document.getElementById('channel-mode').value,
       name_prompt: document.getElementById('name-prompt').value,
       about_prompt: document.getElementById('about-prompt').value,
       about_text: document.getElementById('about-text').value,

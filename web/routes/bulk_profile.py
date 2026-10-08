@@ -9,7 +9,7 @@ from telethon import errors, functions
 
 from models import Account, db
 from profile_generation import generate_profiles, text_units, validate_changes
-from web.routes.profile import connected_client, error_message, read_profile, run
+from web.routes.profile import connected_client, error_message, read_profile, remove_personal_channel, run
 
 bulk_profile_bp = Blueprint('bulk_profile', __name__)
 PLAN_TTL = 15 * 60
@@ -41,7 +41,10 @@ def settings(data):
         result[field] = value.strip()
     if result['name_mode'] not in ('keep', 'ai') or result['about_mode'] not in ('keep', 'clear', 'text', 'ai'):
         raise ValueError('Выберите действие для имени и описания')
-    if result['name_mode'] == 'keep' and result['about_mode'] == 'keep':
+    result['channel_mode'] = data.get('channel_mode', 'keep')
+    if result['channel_mode'] not in ('keep', 'remove'):
+        raise ValueError('Выберите действие для канала профиля')
+    if result['name_mode'] == 'keep' and result['about_mode'] == 'keep' and result['channel_mode'] == 'keep':
         raise ValueError('Выберите хотя бы одно изменение')
     if result['name_mode'] == 'ai' and not result['name_prompt']:
         raise ValueError('Укажите промпт для имён')
@@ -144,6 +147,8 @@ def preview():
                 if mode in ('text', 'ai') and options['about_url']:
                     about = '\n'.join(part for part in (about, options['about_url']) if part)
                 changes['about'] = about
+            if options['channel_mode'] == 'remove':
+                changes['personal_channel_id'] = None
             try:
                 validate_changes(changes, row['before']['about_limit'])
                 if options['sync_labels'] and 'first_name' in changes:
@@ -182,8 +187,15 @@ async def apply_changes(client, row):
     if all(current[key] == value for key, value in row['changes'].items()):
         return
     # Once the write starts, a network failure is ambiguous; never retry it automatically.
-    row['write_started'] = True
-    await client(functions.account.UpdateProfileRequest(**row['changes']), flood_sleep_threshold=0)
+    profile_changes = {key: value for key, value in row['changes'].items() if key != 'personal_channel_id'}
+    if any(current[key] != value for key, value in profile_changes.items()):
+        row['write_started'] = True
+        await client(functions.account.UpdateProfileRequest(**profile_changes), flood_sleep_threshold=0)
+        row['write_confirmed'] = True
+    if 'personal_channel_id' in row['changes'] and current['personal_channel_id'] is not None:
+        row['write_started'] = True
+        await remove_personal_channel(client)
+        row['write_confirmed'] = True
 
 
 @bulk_profile_bp.post('/bulk-profile/<plan_id>/<int:account_id>/apply')
@@ -204,7 +216,7 @@ def apply(plan_id, account_id):
         if account_id in store['active']:
             return jsonify(error='Этот аккаунт уже изменяется. Проверьте профиль перед повтором'), 409
         store['active'].add(account_id)
-        row.update(status='sending', message='Сохранение', write_started=False)
+        row.update(status='sending', message='Сохранение', write_started=False, write_confirmed=False)
     try:
         account = db.session.get(Account, account_id)
         if account is None or account.status != 'authorized':
@@ -226,6 +238,8 @@ def apply(plan_id, account_id):
         row.update(status='uncertain' if uncertain else 'error', message=error_message(exc))
         if uncertain:
             row['message'] = 'Результат не подтверждён. Проверьте профиль в Telegram перед повтором'
+        elif row['write_confirmed']:
+            row.update(status='uncertain', message='Часть изменений сохранена. Проверьте профиль в Telegram и создайте новый предпросмотр')
     finally:
         with store['lock']:
             store['active'].discard(account_id)

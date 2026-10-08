@@ -48,6 +48,12 @@
       <div id="about-link-fields" hidden><label for="about-url" class="form-label">Ссылка (необязательно)</label><input type="url" class="form-control" id="about-url" maxlength="4000" placeholder="https://t.me/community"></div>
     </fieldset>
   </div>
+  <fieldset class="border-bottom pb-4 mb-4" style="max-width:500px">
+    <legend class="fs-6 fw-semibold">Канал в профиле</legend>
+    <label for="channel-mode" class="form-label">Действие для канала</label>
+    <select id="channel-mode" class="form-select"><option value="keep">Оставить без изменений</option><option value="remove">Убрать канал из профиля</option></select>
+    <p class="small text-muted mt-2 mb-0">Сам канал и его сообщения сохраняются. Аккаунт остаётся участником канала.</p>
+  </fieldset>
   <div class="d-flex gap-3 align-items-center flex-wrap mb-4">
     <button type="submit" id="preview-button" class="btn btn-outline-primary"><i class="bi bi-eye me-1"></i>Предпросмотр</button>
     <button type="button" id="apply-button" class="btn btn-primary" disabled><i class="bi bi-check2-all me-1"></i>Применить</button>

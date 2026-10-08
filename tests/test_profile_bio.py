@@ -1,22 +1,24 @@
 import asyncio
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from telethon import functions, types
 
 import test_features as fixtures
-from web.routes.profile import read_profile, update
+from web.routes.profile import read_profile, update, remove_personal_channel, RemovePersonalChannelRequest
 
 
 class ProfileClient:
-    def __init__(self, about='Existing biography', premium=False):
+    def __init__(self, about='Existing biography', premium=False, channel_id=None):
         self.about = about
         self.premium = premium
         self.first_name = 'Original'
         self.last_name = 'Name'
         self.username = 'originalname'
         self.requests = []
+        self.channel_id = channel_id
+        self.channel_title = 'Profile channel'
 
     def is_connected(self):
         return True
@@ -26,7 +28,13 @@ class ProfileClient:
         user = types.User(id=888, is_self=True, first_name=self.first_name,
                           last_name=self.last_name, username=self.username, premium=self.premium)
         if isinstance(request, functions.users.GetFullUserRequest):
-            return SimpleNamespace(full_user=SimpleNamespace(id=888, about=self.about), users=[user])
+            chats = [SimpleNamespace(id=self.channel_id, title=self.channel_title, username='profile_channel')] if self.channel_id else []
+            return SimpleNamespace(full_user=SimpleNamespace(id=888, about=self.about, personal_channel_id=self.channel_id), users=[user], chats=chats)
+        if isinstance(request, functions.account.UpdatePersonalChannelRequest):
+            if not isinstance(request.channel, types.InputChannelEmpty):
+                raise AssertionError('Only detaching the profile channel is allowed')
+            self.channel_id = None
+            return True
         if isinstance(request, functions.account.UpdateProfileRequest):
             for field in ('first_name', 'last_name', 'about'):
                 value = getattr(request, field)
@@ -147,3 +155,53 @@ class ProfileBioTests(unittest.TestCase):
                                    users=[types.User(id=999)])
         with self.assertRaisesRegex(ValueError, 'Telegram'):
             asyncio.run(read_profile(client))
+
+    def test_profile_channel_reads_and_renders_from_full_user(self):
+        client = self.install_profile(channel_id=123)
+        client.channel_title = 'Channel <test>'
+        with patch('web.routes.profile.run', side_effect=asyncio.run):
+            page = self.client.get(self.url()).get_data(as_text=True)
+        self.assertIn('Channel &lt;test&gt;', page)
+        self.assertIn('ID: -100123', page)
+        self.assertIn('Убрать канал из профиля', page)
+        self.assertTrue(all(isinstance(req, functions.users.GetFullUserRequest) for req in client.requests))
+
+    def test_remove_channel_requires_confirmation_and_preserves_profile(self):
+        client = self.install_profile(channel_id=123)
+        with patch('web.routes.profile.run', side_effect=asyncio.run):
+            self.client.get(self.url())
+            data = dict(action='remove_channel', personal_channel_id='123', channel_user_id='888', csrf_token=self.token())
+            self.client.post(self.url(), data=data)
+            self.assertEqual(client.channel_id, 123)
+            response = self.client.post(self.url(), data={**data, 'confirm_remove_channel': 'on'}, follow_redirects=True)
+        self.assertIsNone(client.channel_id)
+        self.assertEqual((client.first_name, client.last_name, client.username, client.about),
+                         ('Original', 'Name', 'originalname', 'Existing biography'))
+        self.assertIn('Канал не привязан', response.get_data(as_text=True))
+        writes = [req for req in client.requests if not isinstance(req, functions.users.GetFullUserRequest)]
+        self.assertEqual(len(writes), 1)
+        self.assertIsInstance(writes[0], functions.account.UpdatePersonalChannelRequest)
+
+    def test_remove_channel_rejects_stale_channel_or_session(self):
+        client = ProfileClient(channel_id=456)
+        data = dict(confirm_remove_channel='on', channel_user_id='888', personal_channel_id='123')
+        for values in (data, {**data, 'personal_channel_id': '456', 'channel_user_id': '999'}):
+            with self.assertRaises(ValueError):
+                asyncio.run(update(client, 'remove_channel', values))
+        self.assertEqual(client.channel_id, 456)
+        self.assertTrue(all(isinstance(req, functions.users.GetFullUserRequest) for req in client.requests))
+
+    def test_remove_channel_noop_and_false_response_are_distinct(self):
+        client = ProfileClient()
+        asyncio.run(update(client, 'remove_channel', dict(confirm_remove_channel='on', channel_user_id='888', personal_channel_id='123')))
+        self.assertEqual(len(client.requests), 1)
+        with self.assertRaisesRegex(ValueError, 'не подтвердил'):
+            asyncio.run(remove_personal_channel(AsyncMock(return_value=False)))
+
+    def test_empty_channel_request_serializes_without_peer_lookup(self):
+        from telethon import utils
+        request = RemovePersonalChannelRequest(types.InputChannelEmpty())
+        client = SimpleNamespace(get_input_entity=AsyncMock(side_effect=AssertionError('No peer lookup')))
+        asyncio.run(request.resolve(client, utils))
+        client.get_input_entity.assert_not_awaited()
+        self.assertEqual(bytes(request), bytes(functions.account.UpdatePersonalChannelRequest(types.InputChannelEmpty())))

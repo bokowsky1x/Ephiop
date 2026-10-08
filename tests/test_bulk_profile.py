@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from telethon import errors, functions
+from telethon import errors, functions, types
 
 import test_features as fixtures
 from test_profile_bio import ProfileClient
@@ -247,6 +247,65 @@ class BulkProfileTests(unittest.TestCase):
         db.session.commit()
         self.assertEqual(self.apply(plan).json['status'], 'error')
         self.assertFalse(self.writes(self.first))
+
+    def test_remove_channel_only_for_selected_account_without_ai_or_profile_writes(self):
+        self.setup_profiles()
+        self.first.channel_id, self.second.channel_id = 123, 456
+        with patch('web.routes.bulk_profile.generate_profiles', new_callable=AsyncMock) as ai:
+            plan = self.preview(account_ids=[self.account_id], about_mode='keep', channel_mode='remove').json
+            ai.assert_not_awaited()
+        self.assertEqual(plan['rows'][0]['before']['personal_channel_id'], 123)
+        self.assertEqual(plan['rows'][0]['changes'], {'personal_channel_id': None})
+        self.assertEqual(self.first.channel_id, 123)
+        self.assertEqual(self.apply(plan).json['status'], 'success')
+        self.assertEqual(self.apply(plan).json['status'], 'success')
+        self.assertIsNone(self.first.channel_id)
+        self.assertEqual(self.second.channel_id, 456)
+        self.assertEqual(self.first.about, 'Первое описание')
+        self.assertFalse(self.writes(self.first))
+        requests = [req for req in self.first.requests if isinstance(req, functions.account.UpdatePersonalChannelRequest)]
+        self.assertEqual(len(requests), 1)
+        self.assertIsInstance(requests[0].channel, types.InputChannelEmpty)
+
+    def test_remove_channels_from_all_and_skip_profiles_without_channel(self):
+        self.setup_profiles()
+        self.first.channel_id = 123
+        plan = self.preview(about_mode='keep', channel_mode='remove').json
+        self.assertEqual([row['status'] for row in plan['rows']], ['pending', 'unchanged'])
+        self.assertEqual(self.apply(plan).json['status'], 'success')
+        self.assertEqual(self.apply(plan, self.second_id).json['status'], 'unchanged')
+        self.assertTrue(all(isinstance(req, functions.users.GetFullUserRequest) for req in self.second.requests))
+
+    def test_channel_changed_after_preview_prevents_all_writes(self):
+        self.setup_profiles()
+        self.first.channel_id = 123
+        plan = self.preview(channel_mode='remove').json
+        self.first.channel_id = 456
+        self.assertEqual(self.apply(plan).json['status'], 'error')
+        self.assertEqual(self.first.about, 'Первое описание')
+        self.assertEqual(self.first.channel_id, 456)
+        self.assertFalse(self.writes(self.first))
+
+    def test_partial_update_is_not_retried_after_channel_failure(self):
+        self.setup_profiles()
+        self.first.channel_id = 123
+        plan = self.preview(channel_mode='remove').json
+        with patch('web.routes.bulk_profile.remove_personal_channel', new=AsyncMock(side_effect=ValueError('Channel not updated'))) as remove:
+            result = self.apply(plan)
+            self.assertEqual(result.json['status'], 'uncertain')
+            self.assertIn('Часть изменений', result.json['message'])
+            self.assertEqual(self.apply(plan).json['status'], 'uncertain')
+            self.assertEqual(remove.await_count, 1)
+        self.assertEqual(self.first.about, '')
+        self.assertEqual(self.first.channel_id, 123)
+        self.assertEqual(len(self.writes(self.first)), 1)
+
+    def test_channel_keep_is_default_and_invalid_mode_rejected(self):
+        self.setup_profiles()
+        self.first.channel_id = 123
+        self.apply(self.preview().json)
+        self.assertEqual(self.first.channel_id, 123)
+        self.assertEqual(self.preview(channel_mode='delete_channel').status_code, 400)
 
 
 class ProfileGenerationTests(unittest.TestCase):

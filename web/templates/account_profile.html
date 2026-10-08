@@ -57,6 +57,18 @@
       <button class="btn btn-outline-primary"><i class="bi bi-check-lg"></i> Сохранить название</button>
     </form>
     {% if profile %}
+    <h6 class="border-top pt-3">Канал в профиле</h6>
+    {% if profile.personal_channel_id %}
+    <p class="mb-1 text-break">{{ profile.personal_channel_title or 'Канал' }}</p>
+    <p class="small text-muted text-break">ID: -100{{ profile.personal_channel_id }}{% if profile.personal_channel_username %} · @{{ profile.personal_channel_username }}{% endif %}</p>
+    <form method="post" class="mb-4">
+      {{ token('remove_channel') }}
+      <input type="hidden" name="personal_channel_id" value="{{ profile.personal_channel_id }}">
+      <input type="hidden" name="channel_user_id" value="{{ profile.user_id }}">
+      <div class="form-check mb-3"><input id="confirm-remove-channel" type="checkbox" name="confirm_remove_channel" class="form-check-input" required><label for="confirm-remove-channel" class="form-check-label">Убрать канал из профиля, не удаляя сам канал</label></div>
+      <button class="btn btn-outline-danger" type="submit"><i class="bi bi-link-45deg"></i> Убрать канал из профиля</button>
+    </form>
+    {% else %}<p class="text-muted mb-4">Канал не привязан</p>{% endif %}
     <h6 class="border-top pt-3">Фотография профиля</h6>
     {% if profile.has_photo %}
     <img src="{{ url_for('profile.photo', account_id=account.id) }}" alt="Фотография профиля" class="mb-3" style="width:160px;height:160px;object-fit:cover;border-radius:8px">
