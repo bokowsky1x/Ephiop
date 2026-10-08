@@ -6,9 +6,10 @@ from flask import Blueprint, abort, current_app, flash, redirect, render_templat
 from sqlalchemy.exc import IntegrityError
 
 from ai_engine import redact
+from ai_locales import LANGUAGE_LABELS, NOTICE_LANGUAGES, parse_glossary, valid_contact
 from ai_health import checks, telegram_checks
 from ai_knowledge import STATUSES, archive, import_site, ingest, source_url_allowed, telegram_source
-from models import Account, AIAgent, AIDecision, AIFact, AIFactHistory, AIMessage, AIUserContext, db
+from models import Account, AIAgent, AIDecision, AIExample, AIReplayRun, AIFact, AIFactHistory, AIMessage, AIUserContext, db
 from web.routes.profile import run
 
 assistant_bp = Blueprint('assistant', __name__)
@@ -69,8 +70,32 @@ def settings(agent):
     flags = {flag: data.get(flag) == 'on' for flag in FLAGS}
     flags.update({flag: data.get(flag) == 'on' for flag in DELETE_FLAGS})
     language = data.get('fallback_language', agent.fallback_language or 'AMHARIC')
-    if language not in ('AMHARIC', 'AMHARIC_LATIN', 'OROMO', 'ENGLISH'):
+    if language not in LANGUAGE_LABELS:
         raise ValueError('Выберите язык ответов без подписи')
+    locale = {}
+    for key, limit in (('language_profile', 20), ('custom_language', 80), ('language_instructions', 1500),
+                       ('glossary', 4000), ('support_contact', 200), ('support_text', 500), ('privacy_text', 300)):
+        default = getattr(agent, key, None)
+        if default is None:
+            default = 'ethiopia' if key == 'language_profile' else 'support@betjam.com' if key == 'support_contact' else ''
+        value = data.get(key, default).strip()
+        if len(value) > limit:
+            raise ValueError(f'{key}: максимум {limit} символов')
+        locale[key] = value
+    if locale['language_profile'] not in ('ethiopia', 'general'):
+        raise ValueError('Выберите языковой профиль')
+    if language == 'CUSTOM' and not locale['custom_language']:
+        raise ValueError('Укажите название другого языка')
+    parse_glossary(locale['glossary'])
+    if not valid_contact(locale['support_contact']):
+        raise ValueError('Контакт поддержки: email или адрес HTTPS')
+    if locale['language_profile'] == 'general' and (agent.language_profile or 'ethiopia') == 'ethiopia' and locale['support_contact'] == 'support@betjam.com':
+        locale['support_contact'] = ''
+    if len((locale['privacy_text'] + locale['support_text'] + locale['support_contact']).encode('utf-16-le')) // 2 > 750:
+        raise ValueError('Предупреждение, ответ поддержки и контакт: не больше 750 символов вместе')
+    if mode != 'OFF' and language not in NOTICE_LANGUAGES and (
+            not locale['privacy_text'] or (flags['support_router'] and not locale['support_text'])):
+        raise ValueError('Для этого языка задайте проверенные тексты предупреждения и поддержки')
     if mode == 'AUTO' and data.get('auto_confirm') != 'on':
         raise ValueError('Подтвердите автоматические действия для режима AUTO')
     if mode != 'OFF' and (not flags['consent'] or not current_app.config.get('OPENAI_API_KEY')):
@@ -96,6 +121,8 @@ def settings(agent):
         agent.knowledge_revision += 1
     agent.name, agent.mode, agent.chat_id, agent.channel_id, agent.account_id = name, mode, chat_id, channel_id, account.id
     agent.fallback_language = language
+    for key, value in locale.items():
+        setattr(agent, key, value)
     for key, value in {**flags, **numbers, 'fact_max_age_hours': age}.items():
         setattr(agent, key, value)
     agent.revision = (agent.revision or 0) + 1
@@ -132,7 +159,7 @@ def edit(agent_id):
         except Exception as exc:
             fail(exc)
     tab = request.args.get('tab', 'journal')
-    if tab not in ('journal', 'review', 'knowledge', 'deleted', 'scam'):
+    if tab not in ('journal', 'review', 'knowledge', 'deleted', 'scam', 'examples'):
         tab = 'journal'
     query = AIDecision.query.filter_by(agent_id=agent.id)
     if tab == 'review':
@@ -142,7 +169,9 @@ def edit(agent_id):
     elif tab == 'scam':
         query = query.filter(AIDecision.intent.in_(('SCAM', 'FAKE_AGENT', 'FAKE_SUPPORT')))
     stats = db.session.query(AIDecision.intent, db.func.count(AIDecision.id)).filter_by(agent_id=agent.id).group_by(AIDecision.intent).all()
+    from web.routes.assistant_examples import example_context
     return render_template('assistant_edit.html', agent=agent, modes=MODES, csrf_token=csrf(), tab=tab,
+        **(example_context(agent) if tab == 'examples' else {}),
         accounts=Account.query.filter_by(status='authorized').all(),
         decisions=query.order_by(AIDecision.id.desc()).limit(100).all(),
         facts=AIFact.query.filter_by(agent_id=agent.id).order_by(AIFact.id.desc()).limit(100).all(),
@@ -195,11 +224,18 @@ def delete_assignment(agent_id, created_at=None):
         raise ValueError('Сначала выключите ассистента')
     if AIDecision.query.filter_by(agent_id=agent_id).filter(AIDecision.state.in_(('ANALYZING', 'RUNNING'))).first():
         raise ValueError('Дождитесь завершения текущего анализа или действия')
+    if AIReplayRun.query.join(AIExample).filter(AIExample.agent_id == agent_id, AIReplayRun.state == 'RUNNING').first():
+        raise ValueError('Дождитесь завершения тестового анализа')
     revision = agent.revision
+    running_examples = db.session.query(AIExample.agent_id).filter_by(running=True)
+    if not AIAgent.query.filter_by(id=agent_id, revision=revision, mode='OFF').filter(
+            ~AIAgent.id.in_(running_examples)).update({'revision': revision}, synchronize_session='fetch'):
+        raise ValueError('Назначение изменилось или выполняется тестовый анализ')
     fact_ids = db.session.query(AIFact.id).filter_by(agent_id=agent_id)
     AIFactHistory.query.filter(AIFactHistory.fact_id.in_(fact_ids)).delete(synchronize_session='fetch')
     AIFact.query.filter_by(agent_id=agent_id).update({'related_id': None}, synchronize_session='fetch')
-    for model in (AIDecision, AIMessage, AIUserContext, AIFact):
+    AIReplayRun.query.filter(AIReplayRun.example_id.in_(db.session.query(AIExample.id).filter_by(agent_id=agent_id))).delete(synchronize_session='fetch')
+    for model in (AIExample, AIDecision, AIMessage, AIUserContext, AIFact):
         model.query.filter_by(agent_id=agent_id).delete(synchronize_session='fetch')
     if not AIAgent.query.filter_by(id=agent_id, revision=revision, mode='OFF').delete(synchronize_session='fetch'):
         raise ValueError('Настройки изменились. Удаление отменено')

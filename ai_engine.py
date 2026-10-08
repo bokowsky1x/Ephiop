@@ -7,8 +7,9 @@ import re
 
 from openai import APIError, APIConnectionError, APITimeoutError, AsyncOpenAI
 from PIL import Image, ImageOps, UnidentifiedImageError
+from ai_locales import LANGUAGE_LABELS
 
-LANGUAGES = ('AMHARIC', 'AMHARIC_LATIN', 'OROMO', 'ENGLISH', 'MIXED', 'UNKNOWN')
+LANGUAGES = (*LANGUAGE_LABELS, 'MIXED', 'UNKNOWN')
 INTENTS = ('GREETING', 'CASUAL_CHAT', 'FOOTBALL_DISCUSSION', 'POST_DISCUSSION', 'INFORMATION',
            'PROMO_INFO_REQUEST', 'BONUS_INFO_REQUEST', 'FREE_SPIN_INFO_REQUEST', 'WAGERING_INFO_REQUEST',
            'PROMO_CODE_INFO', 'CONTEST_INFO_REQUEST', 'RESULT_INFO_REQUEST', 'HOW_TO_REGISTER',
@@ -64,9 +65,14 @@ async def image_content(client, message):
     await client.download_media(message, file=stream, progress_callback=progress)
     if stream.tell() > 10 * 1024 * 1024:
         raise AnalysisError('Изображение больше 10 МБ: требуется ручная проверка')
-    stream.seek(0)
+    return encoded_image(normalize_image(stream.getvalue()))
+
+
+def normalize_image(data):
+    if len(data) > 10 * 1024 * 1024:
+        raise AnalysisError('Изображение больше 10 МБ: требуется ручная проверка')
     try:
-        with Image.open(stream) as source:
+        with Image.open(BytesIO(data)) as source:
             if source.format not in ('JPEG', 'PNG', 'WEBP') or source.width * source.height > 20_000_000:
                 raise AnalysisError('Неподдерживаемое изображение: требуется ручная проверка')
             image = ImageOps.exif_transpose(source).convert('RGB')
@@ -75,7 +81,11 @@ async def image_content(client, message):
             image.save(output, 'JPEG', quality=90)
     except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
         raise AnalysisError('Не удалось прочитать изображение: требуется ручная проверка') from exc
-    return dict(type='input_image', detail='high', image_url='data:image/jpeg;base64,' + base64.b64encode(output.getvalue()).decode('ascii'))
+    return output.getvalue()
+
+
+def encoded_image(data):
+    return dict(type='input_image', detail='high', image_url='data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii'))
 
 
 def schema(properties):
@@ -135,16 +145,17 @@ async def ask(app, name, instructions, payload, output_schema, image=None):
         raise AnalysisError('AI вернул неверный формат анализа') from exc
 
 
-def analysis_resources():
+def analysis_resources(profile='ethiopia'):
     root = Path(__file__).parent
     values = []
-    for name in ('prompts/assistant_system.txt', 'data/ethiopia_slang.json'):
+    names = ('prompts/assistant_system.txt', 'data/ethiopia_slang.json') if profile == 'ethiopia' else ('prompts/assistant_system.txt',)
+    for name in names:
         try:
             values.append((root / name).read_text(encoding='utf-8'))
         except (OSError, UnicodeError) as exc:
             raise AnalysisError(f'Не удалось прочитать {name}. Проверьте файлы сборки на сервере') from exc
     try:
-        slang = json.loads(values[1])
+        slang = json.loads(values[1]) if profile == 'ethiopia' else {}
         if not values[0].strip() or not isinstance(slang, dict) or not all(
                 isinstance(key, str) and isinstance(value, str) for key, value in slang.items()):
             raise ValueError
@@ -154,8 +165,8 @@ def analysis_resources():
 
 
 async def analyze(app, payload, image=None):
-    instructions, slang = analysis_resources()
-    payload = {**payload, 'slang': slang}
+    instructions, slang = analysis_resources(payload.get('language_profile', 'ethiopia'))
+    payload = {**payload, 'slang': {**slang, **payload.get('glossary', {})}}
     output_schema = schema(dict(language=enum(LANGUAGES), intent=enum(INTENTS), action=enum(ACTIONS),
                                 confidence=dict(type='number'), classification=enum(CLASSIFICATIONS),
                                 reply=dict(type='string'), reason=dict(type='string'),

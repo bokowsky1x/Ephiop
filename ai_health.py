@@ -5,6 +5,7 @@ from telethon import errors
 
 from ai_engine import AnalysisError, analysis_resources
 from models import AIDecision
+from ai_locales import LANGUAGE_LABELS, NOTICE_LANGUAGES
 
 
 def check_row(key, title, state, detail):
@@ -32,12 +33,19 @@ def checks(app, agent, telegram=None):
                   'Ключ настроен; доступ, баланс и модель этой проверкой не проверяются'
                   if app.config.get('OPENAI_API_KEY') else 'На сервере отсутствует OPENAI_API_KEY')]
     try:
-        analysis_resources()
+        analysis_resources(agent.language_profile)
         rows.append(check_row('resources', 'Файлы анализа', 'ok', 'Инструкции и словарь доступны и корректны'))
     except AnalysisError as exc:
         rows.append(check_row('resources', 'Файлы анализа', 'error', str(exc)))
     rows.append(check_row('vision', 'Изображения', 'ok' if agent.vision else 'warning',
                           'Анализ разрешён' if agent.vision else 'Vision выключен: изображения отправляются на ручную проверку'))
+    templates_ready = agent.fallback_language in NOTICE_LANGUAGES or bool(agent.privacy_text and (agent.support_text or not agent.support_router))
+    rows.append(check_row('language', 'Язык и регион', 'ok' if templates_ready else 'warning',
+        f'{LANGUAGE_LABELS.get(agent.fallback_language, agent.fallback_language)}; профиль: {agent.language_profile}. ' +
+        ('Шаблоны безопасности доступны; для других языков без шаблона — проверка человеком.' if templates_ready else
+         'Задайте проверенные тексты предупреждения и поддержки на выбранном языке.')))
+    rows.append(check_row('support_contact', 'Контакт поддержки', 'ok' if agent.support_contact else 'warning',
+                          agent.support_contact or 'Не задан: ответы не содержат email или ссылки поддержки'))
     categories = [label for flag, label in (
         ('delete_personal_data', 'персональные данные'), ('delete_payment_data', 'платёжные данные'),
         ('delete_identity_documents', 'документы'), ('scam_detection', 'мошенничество')) if getattr(agent, flag)]

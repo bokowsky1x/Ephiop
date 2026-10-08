@@ -27,12 +27,14 @@
   </form>
 </details>
 <ul class="nav nav-tabs mb-4">
-  {% for key, label in [('journal','Журнал'),('review','Проверка'),('knowledge','Источники'),('deleted','Удаления'),('scam','Мошенничество')] %}<li class="nav-item"><a class="nav-link {{ 'active' if tab == key else '' }}" href="{{ url_for('assistant.edit', agent_id=agent.id, tab=key) }}">{{ label }}</a></li>{% endfor %}
+  {% for key, label in [('journal','Журнал'),('review','Проверка'),('knowledge','Источники'),('examples','Тесты и исправления'),('deleted','Удаления'),('scam','Мошенничество')] %}<li class="nav-item"><a class="nav-link {{ 'active' if tab == key else '' }}" href="{{ url_for('assistant.edit', agent_id=agent.id, tab=key) }}">{{ label }}</a></li>{% endfor %}
 </ul>
-{% if tab == 'knowledge' %}
+{% if tab == 'examples' %}
+{% include '_assistant_examples.html' %}
+{% elif tab == 'knowledge' %}
 <div class="d-flex gap-3 align-items-center flex-wrap border-bottom pb-4 mb-4">
   <form method="post" action="{{ url_for('assistant.channel', agent_id=agent.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-outline-primary" type="submit"><i class="bi bi-arrow-clockwise me-1"></i>Последние 3 поста канала</button></form>
-  <form method="post" action="{{ url_for('assistant.site', agent_id=agent.id) }}" class="d-flex gap-2 flex-wrap"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input class="form-control" type="url" name="url" value="https://betjam.com/aa/" aria-label="Официальная страница" style="width:300px;max-width:100%" required><button class="btn btn-outline-primary" type="submit"><i class="bi bi-download me-1"></i>Прочитать страницу</button></form>
+  {% if agent.language_profile == 'ethiopia' %}<form method="post" action="{{ url_for('assistant.site', agent_id=agent.id) }}" class="d-flex gap-2 flex-wrap"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input class="form-control" type="url" name="url" value="https://betjam.com/aa/" aria-label="Официальная страница" style="width:300px;max-width:100%" required><button class="btn btn-outline-primary" type="submit"><i class="bi bi-download me-1"></i>Прочитать страницу</button></form>{% endif %}
 </div>
 {% for fact in facts %}
 <section class="border-bottom pb-4 mb-4">
@@ -80,6 +82,7 @@
   {% if agent.chat_id.startswith('-100') %}<a class="small" href="https://t.me/c/{{ agent.chat_id[4:] }}/{{ decision.message_id }}" target="_blank" rel="noopener noreferrer">Сообщение в Telegram</a>{% endif %}
   <div class="small text-break mt-2">{{ decision.reason }}{% if decision.reason %} · {% endif %}{{ decision.result }}</div>
   {% if decision.reply %}<p class="text-break mt-2 mb-2" style="white-space:pre-wrap">{{ decision.reply }}</p>{% endif %}
+  <a class="btn btn-sm btn-outline-secondary mt-2" href="{{ url_for('assistant.edit', agent_id=agent.id, tab='examples', correct=decision.id) }}"><i class="bi bi-pencil me-1"></i>Добавить исправление</a>
   {% if decision.state == 'REVIEW' %}
   <form method="post" action="{{ url_for('assistant.review', decision_id=decision.id) }}" class="mt-3">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

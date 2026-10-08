@@ -271,6 +271,13 @@ class AIAgent(db.Model):
     information = db.Column(db.Boolean, default=True, nullable=False)
     vision = db.Column(db.Boolean, default=False, nullable=False)
     fallback_language = db.Column(db.String(30), default='AMHARIC', nullable=False)
+    language_profile = db.Column(db.String(20), default='ethiopia', nullable=False)
+    custom_language = db.Column(db.String(80), default='', nullable=False)
+    language_instructions = db.Column(db.Text, default='', nullable=False)
+    glossary = db.Column(db.Text, default='', nullable=False)
+    support_contact = db.Column(db.String(200), default='support@betjam.com', nullable=False)
+    support_text = db.Column(db.Text, default='', nullable=False)
+    privacy_text = db.Column(db.Text, default='', nullable=False)
     scam_detection = db.Column(db.Boolean, default=True, nullable=False)
     allow_delete = db.Column(db.Boolean, default=False, nullable=False)
     delete_personal_data = db.Column(db.Boolean, default=True, nullable=False)
@@ -371,6 +378,40 @@ class AIDecision(db.Model):
     result = db.Column(db.Text, default='')
     model = db.Column(db.String(100), default='')
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    completed_at = db.Column(db.DateTime)
+
+
+class AIExample(db.Model):
+    __tablename__ = 'ai_examples'
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey('ai_agents.id'), nullable=False, index=True)
+    title = db.Column(db.String(100), nullable=False)
+    text = db.Column(db.Text, default='', nullable=False)
+    reply_context = db.Column(db.Text, default='', nullable=False)
+    image = db.Column(db.LargeBinary)
+    expected = db.Column(db.JSON, default=dict, nullable=False)
+    corrected_reply = db.Column(db.Text, default='', nullable=False)
+    approved = db.Column(db.Boolean, default=False, nullable=False)
+    source_decision_id = db.Column(db.Integer)
+    running = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    runs = db.relationship('AIReplayRun', cascade='all, delete-orphan', order_by='AIReplayRun.id.desc()')
+
+
+class AIReplayRun(db.Model):
+    __tablename__ = 'ai_replay_runs'
+    __table_args__ = (db.UniqueConstraint('example_id', 'request_token'),)
+    id = db.Column(db.Integer, primary_key=True)
+    example_id = db.Column(db.Integer, db.ForeignKey('ai_examples.id'), nullable=False, index=True)
+    request_token = db.Column(db.String(64), nullable=False)
+    state = db.Column(db.String(20), default='RUNNING', nullable=False)
+    agent_revision = db.Column(db.Integer, nullable=False)
+    knowledge_revision = db.Column(db.Integer, nullable=False)
+    prompt_version = db.Column(db.String(64), nullable=False)
+    model = db.Column(db.String(100), nullable=False)
+    outcome = db.Column(db.JSON, default=dict, nullable=False)
+    result = db.Column(db.Text, default='', nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     completed_at = db.Column(db.DateTime)
 
 

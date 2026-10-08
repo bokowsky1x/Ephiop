@@ -9,6 +9,7 @@ from telethon import errors
 
 from ai_engine import AnalysisError, analyze, failure_message, fingerprint, image_content, redact
 from ai_knowledge import ingest, telegram_source, verified_facts, archive
+from ai_locales import LANGUAGE_LABELS, NOTICE_LANGUAGES, custom_notice, has_language_hint, locale_payload
 from models import Account, AIAgent, AIDecision, AIFact, AIMessage, AIUserContext, db
 
 INFO_INTENTS = {'INFORMATION', 'POST_DISCUSSION', 'PROMO_INFO_REQUEST', 'BONUS_INFO_REQUEST',
@@ -22,7 +23,7 @@ DELETE_FLAGS = {'PERSONAL_DATA': 'delete_personal_data', 'PAYMENT_DATA': 'delete
                 'IDENTITY_DOCUMENT': 'delete_identity_documents'}
 
 
-def support_reply(language):
+def _legacy_support_reply(language):
     texts = {
         'AMHARIC': 'የክፍያ ወይም የአካውንት ሁኔታን ማረጋገጥ አልችልም። በኦፊሴላዊው ድረ ገጽ ያለውን ድጋፍ ያነጋግሩ፦ support@betjam.com',
         'OROMO': 'Haala kaffaltii yookaan akkaawuntii keessanii mirkaneessuu hin danda\'u. Deeggarsa marsariitii rasmii qunnamaa: support@betjam.com',
@@ -31,7 +32,7 @@ def support_reply(language):
     return texts.get(language, 'I cannot check payment or account status. Please contact support through the official website or support@betjam.com.')
 
 
-def privacy_warning(language, payment=False, support=True):
+def _legacy_privacy_warning(language, payment=False, support=True):
     warning = {'AMHARIC': 'እባክዎ የግል ወይም የክፍያ መረጃ ያለባቸውን ስክሪንሾቶች በዚህ ቻት አይላኩ።',
             'OROMO': 'Odeeffannoo dhuunfaa yookaan kaffaltii chaatii uummataa keessatti hin qoodinaa.',
             'AMHARIC_LATIN': 'Ye gil weyim ye payment mereja be public chat wist ayasayU.'}.get(
@@ -45,11 +46,46 @@ def privacy_warning(language, payment=False, support=True):
     return warning
 
 
+def support_reply(language, agent=None):
+    custom = custom_notice(agent, language, 'support_text')
+    contact = agent.support_contact if agent else 'support@betjam.com'
+    if custom:
+        return custom + (' ' + contact if contact else '')
+    if language not in NOTICE_LANGUAGES:
+        return ''
+    if language == 'RUSSIAN':
+        text = 'Я не могу проверить статус платежа или аккаунта. Обратитесь в официальную поддержку.'
+        return text + (' ' + contact if contact else '')
+    if language == 'ENGLISH' and agent and agent.language_profile == 'general':
+        return 'I cannot check payment or account status. Please contact official support.' + (' ' + contact if contact else '')
+    return _legacy_support_reply(language).replace('support@betjam.com', contact or '').rstrip(': .') + '.'
+
+
+def privacy_warning(language, payment=False, support=True, agent=None):
+    custom = custom_notice(agent, language, 'privacy_text')
+    if custom:
+        warning = custom
+    elif language == 'RUSSIAN':
+        warning = 'Не публикуйте персональные или платёжные данные в общем чате. Никому не передавайте пароли и коды.'
+    elif language in NOTICE_LANGUAGES:
+        # Preserve existing notices for already configured Ethiopian communities.
+        if not agent or (agent.language_profile == 'ethiopia' and agent.support_contact == 'support@betjam.com' and not agent.support_text):
+            return _legacy_privacy_warning(language, payment, support)
+        warning = _legacy_privacy_warning(language, False, False)
+    else:
+        return ''
+    if payment and support:
+        contact = support_reply(language, agent)
+        if contact:
+            warning += ' ' + contact
+    return warning
+
+
 def policy(agent, decision, facts):
     sensitive = decision.classification in SENSITIVE
     if sensitive:
         decision.intent = decision.classification
-        decision.reply = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router)
+        decision.reply = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router, agent=agent)
         if decision.has_image and not agent.vision:
             return 'REVIEW', 'Изображение требует проверки: Vision отключён'
         if decision.action == 'DELETE' and (not agent.allow_delete or not getattr(agent, DELETE_FLAGS[decision.classification])):
@@ -71,11 +107,15 @@ def policy(agent, decision, facts):
     if decision.action not in {'REPLY', 'WARN'} or decision.confidence < agent.reply_confidence:
         return 'REVIEW', 'Недостаточная уверенность для ответа'
     if sensitive:
+        if not decision.reply:
+            return 'REVIEW', 'Нет проверенного предупреждения на этом языке'
         return 'READY', 'Предупреждение о персональных данных подготовлено'
     if decision.intent in SUPPORT_INTENTS:
         if not agent.support_router or decision.confidence < 0.75:
             return 'REVIEW', 'Проверка обращения в поддержку'
-        decision.reply = support_reply(decision.language)
+        decision.reply = support_reply(decision.language, agent)
+        if not decision.reply:
+            return 'REVIEW', 'Нет проверенного ответа поддержки на этом языке'
     else:
         if not decision.reply.strip() or redact(decision.reply, 1000) != decision.reply or re.search(r'https?://|www\.|t\.me/', decision.reply, re.I):
             return 'REVIEW', 'Нужно проверить текст ответа'
@@ -87,7 +127,9 @@ def policy(agent, decision, facts):
             if not agent.scam_detection:
                 return 'REVIEW', 'Защита от мошенничества отключена'
         elif decision.intent in SENSITIVE:
-            decision.reply = privacy_warning(decision.language)
+            decision.reply = privacy_warning(decision.language, agent=agent)
+            if not decision.reply:
+                return 'REVIEW', 'Нет проверенного предупреждения на этом языке'
         elif decision.intent in {'GREETING', 'CASUAL_CHAT', 'FOOTBALL_DISCUSSION'}:
             if not agent.community_replies:
                 return 'IGNORED', 'Ответы на беседу отключены'
@@ -184,16 +226,18 @@ class AIAssistant:
                 return
             facts = verified_facts(agent)
             memory = AIUserContext.query.filter_by(agent_id=agent.id, user_id=user_id).first()
-            known_languages = {'AMHARIC', 'AMHARIC_LATIN', 'OROMO', 'ENGLISH'}
+            known_languages = set(LANGUAGE_LABELS)
             preferred_language = memory.language if memory and memory.language in known_languages else agent.fallback_language
-            has_language_hint = bool(re.search(r'[A-Za-z\u1200-\u137F]{2,}', text.replace('[PRIVATE]', '')))
-            if has_image and not has_language_hint:
+            language_hint = has_language_hint(text)
+            if has_image and not language_hint:
                 preferred_language = agent.fallback_language
             history = AIMessage.query.filter_by(agent_id=agent.id).filter(AIMessage.message_id != message.id).order_by(AIMessage.created_at.desc()).limit(20).all()
             user_history = AIMessage.query.filter_by(agent_id=agent.id, user_id=user_id).filter(AIMessage.message_id != message.id).order_by(AIMessage.created_at.desc()).limit(5).all()
             stage = 'Анализ OpenAI'
+            from ai_examples import approved_examples
             result = await analyze(self.manager.app, dict(message=text, reply_to=reply,
-                preferred_language=preferred_language, has_user_language_hint=has_language_hint,
+                preferred_language=preferred_language, has_user_language_hint=language_hint,
+                **locale_payload(agent), approved_examples=approved_examples(agent.id),
                 permissions=dict(allow_delete=agent.allow_delete, support_router=agent.support_router),
                 recent_messages=[dict(text=row.text, is_ai=row.is_ai) for row in reversed(history)],
                 user_history=[row.text for row in reversed(user_history)], verified_facts=facts,
@@ -201,7 +245,7 @@ class AIAssistant:
             db.session.expire_all()
             for key, value in result.items():
                 setattr(decision, key, value)
-            if decision.language in ('UNKNOWN', 'MIXED') or (has_image and not has_language_hint):
+            if decision.language in ('UNKNOWN', 'MIXED') or (has_image and not language_hint):
                 decision.language = preferred_language
             stage = 'Проверка результата анализа'
             decision.reason = redact(decision.reason, 500)
@@ -328,7 +372,9 @@ class AIAssistant:
                 db.session.commit()
                 if decision.confidence >= agent.moderation_confidence and not self.cooldown(agent, decision, memory):
                     try:
-                        warning = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router)
+                        warning = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router, agent=agent)
+                        if not warning:
+                            raise AnalysisError('Нет проверенного предупреждения на этом языке')
                         await asyncio.wait_for(client.send_message(int(agent.chat_id), warning, parse_mode=None, link_preview=False), 15)
                         agent.last_reply_at = memory.last_reply_at = datetime.utcnow()
                         memory.language, memory.last_intent = decision.language, decision.intent

@@ -19,9 +19,11 @@ def create_app(telegram_manager=None):
 
     with app.app_context():
         db.create_all()
-        from models import AIDecision
+        from models import AIDecision, AIExample, AIReplayRun
         AIDecision.query.filter_by(state='RUNNING').update({'state': 'UNCERTAIN', 'result': 'Процесс прерван. Проверьте Telegram; автоматического повтора нет'})
         AIDecision.query.filter_by(state='ANALYZING').update({'state': 'REVIEW', 'result': 'Анализ прерван. Требуется ручная проверка'})
+        AIReplayRun.query.filter_by(state='RUNNING').update({'state': 'ERROR', 'result': 'Тест прерван перезапуском. Автоматического повтора нет'})
+        AIExample.query.filter_by(running=True).update({'running': False})
         from sqlalchemy import inspect, text
         if 'related_id' not in {column['name'] for column in inspect(db.engine).get_columns('ai_facts')}:
             db.session.execute(text('ALTER TABLE ai_facts ADD COLUMN related_id INTEGER'))
@@ -31,6 +33,17 @@ def create_app(telegram_manager=None):
         for name in ('delete_personal_data', 'delete_payment_data', 'delete_identity_documents'):
             if name not in agent_columns:
                 db.session.execute(text(f'ALTER TABLE ai_agents ADD COLUMN {name} BOOLEAN NOT NULL DEFAULT 1'))
+        for name, definition in {
+            'language_profile': "VARCHAR(20) NOT NULL DEFAULT 'ethiopia'",
+            'custom_language': "VARCHAR(80) NOT NULL DEFAULT ''",
+            'language_instructions': "TEXT NOT NULL DEFAULT ''",
+            'glossary': "TEXT NOT NULL DEFAULT ''",
+            'support_contact': "VARCHAR(200) NOT NULL DEFAULT 'support@betjam.com'",
+            'support_text': "TEXT NOT NULL DEFAULT ''",
+            'privacy_text': "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if name not in agent_columns:
+                db.session.execute(text(f'ALTER TABLE ai_agents ADD COLUMN {name} {definition}'))
         task_columns = {column['name'] for column in inspect(db.engine).get_columns('scheduled_tasks')}
         for name, definition in {
             'once_at': 'DATETIME', 'send_immediately': 'BOOLEAN DEFAULT 0',
@@ -104,6 +117,7 @@ def create_app(telegram_manager=None):
     app.register_blueprint(queue_bp, url_prefix='/queue')
     app.register_blueprint(settings_bp, url_prefix='/settings')
     from web.routes.assistant import assistant_bp
+    from web.routes import assistant_examples
     app.register_blueprint(assistant_bp, url_prefix='/assistant')
 
     return app

@@ -1,0 +1,53 @@
+<section class="border-bottom pb-4 mb-4">
+  <details {{ 'open' if correction_source or not examples else '' }}>
+  <summary class="fs-6 fw-semibold">{{ 'Исправление решения #' ~ correction_source.message_id if correction_source else 'Новый тестовый пример' }}</summary>
+  <form method="post" action="{{ url_for('assistant.add_example', agent_id=agent.id) }}" enctype="multipart/form-data" class="row g-3 mt-1" style="max-width:1000px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="agent_created_at" value="{{ agent.created_at.isoformat() }}">
+    {% if correction_source %}<input type="hidden" name="source_decision_id" value="{{ correction_source.id }}"><input type="hidden" name="source_created_at" value="{{ correction_source.created_at.isoformat() }}">{% endif %}
+    <div class="col-12"><label class="form-label" for="example-title">Название</label><input id="example-title" name="title" class="form-control" maxlength="100" value="{{ prefill.title }}" required></div>
+    <div class="col-md-6"><label class="form-label" for="example-text">Обезличенный текст / описание изображения</label><textarea id="example-text" name="text" class="form-control" rows="3" maxlength="2000">{{ prefill.text }}</textarea></div>
+    <div class="col-md-6"><label class="form-label" for="example-context">Сообщение, на которое ответили</label><textarea id="example-context" name="reply_context" class="form-control" rows="3" maxlength="1500">{{ prefill.reply_context }}</textarea></div>
+    <div class="col-12"><label class="form-label" for="example-image">Обезличенное изображение (JPEG, PNG, WebP)</label><input id="example-image" name="image" class="form-control" type="file" accept="image/jpeg,image/png,image/webp"></div>
+    {% for key, label in [('language','Ожидаемый язык'),('intent','Ожидаемая тема'),('classification','Ожидаемая категория'),('action','Ожидаемое действие'),('policy_state','Результат защитных проверок')] %}
+    <div class="col-md-4"><label class="form-label" for="expected-{{ key }}">{{ label }}</label><select id="expected-{{ key }}" name="expected_{{ key }}" class="form-select"><option value="">Не проверять</option>{% for value in expected_values[key] %}<option value="{{ value }}" {{ 'selected' if prefill.expected.get(key) == value else '' }}>{{ language_labels.get(value, value) if key == 'language' else value }}</option>{% endfor %}</select></div>
+    {% endfor %}
+    <div class="col-12"><label class="form-label" for="example-corrected-reply">Исправленный ответ модератора</label><textarea id="example-corrected-reply" name="corrected_reply" class="form-control" rows="3" maxlength="800">{{ prefill.corrected_reply }}</textarea></div>
+    <div class="col-12"><div class="form-check"><input id="example-anonymized" name="anonymized" class="form-check-input" type="checkbox" required><label for="example-anonymized" class="form-check-label">Имена, телефоны, реквизиты и идентификаторы удалены из текста и изображения</label></div></div>
+    <div class="col-12"><div class="form-check"><input id="example-approved" name="approved" class="form-check-input" type="checkbox"><label for="example-approved" class="form-check-label">Проверено модератором: использовать как пример для этого чата</label></div></div>
+    <div class="col-12"><button class="btn btn-primary" type="submit"><i class="bi bi-plus-circle me-1"></i>Сохранить пример</button></div>
+  </form>
+  </details>
+</section>
+{% for example in examples %}
+<section class="border-bottom pb-4 mb-4">
+  <div class="d-flex gap-2 align-items-center flex-wrap mb-2"><h2 class="fs-6 fw-semibold text-break mb-0">{{ example.title }}</h2><span class="badge bg-{{ 'success' if example.approved else 'secondary' }}">{{ 'Подтверждённое исправление' if example.approved else 'Тестовый пример' }}</span>{% if example.image %}<span class="badge bg-secondary"><i class="bi bi-image me-1"></i>Изображение</span>{% endif %}</div>
+  <p class="text-break mb-2" style="white-space:pre-wrap">{{ example.text }}</p>
+  {% if example.reply_context %}<div class="small text-muted text-break mb-2">Контекст: {{ example.reply_context }}</div>{% endif %}
+  <div class="d-flex gap-2 flex-wrap mb-3">{% for key, value in example.expected.items() %}<span class="small text-break">{{ key }}: <strong>{{ value }}</strong></span>{% endfor %}</div>
+  {% if example.corrected_reply %}<p class="text-break small" style="white-space:pre-wrap">Ответ модератора: {{ example.corrected_reply }}</p>{% endif %}
+  <form method="post" action="{{ url_for('assistant.run_example', agent_id=agent.id, example_id=example.id) }}" class="mb-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="agent_created_at" value="{{ agent.created_at.isoformat() }}"><input type="hidden" name="example_created_at" value="{{ example.created_at.isoformat() }}"><input type="hidden" name="request_token" value="{{ replay_tokens[example.id] }}">
+    <div class="form-check mb-2"><input id="run-confirm-{{ example.id }}" class="form-check-input" type="checkbox" name="confirm_ai" required><label for="run-confirm-{{ example.id }}" class="form-check-label small">Разрешаю платный запрос OpenAI с этим обезличенным примером. Telegram не используется.</label></div>
+    <button type="submit" class="btn btn-outline-primary" {{ 'disabled' if example.running else '' }}><i class="bi bi-play me-1"></i>{{ 'Проверяется' if example.running else 'Проверить без публикации' }}</button>
+  </form>
+  {% if example.runs %}
+  <details open><summary class="small fw-semibold">Прогоны: {{ example.runs|length }}</summary>
+    {% for run in example.runs %}<div class="border-start ps-3 py-2 mt-2">
+      <div class="d-flex gap-2 flex-wrap align-items-center"><span class="badge bg-{{ 'success' if run.state == 'PASS' else 'danger' if run.state in ['FAIL','ERROR'] else 'secondary' }}">{{ run.state }}</span><span class="small text-break">{{ run.result }}</span></div>
+      <div class="small text-muted text-break mt-1">{{ run.created_at.strftime('%d.%m.%Y %H:%M:%S') }} UTC · {{ run.model }} · Настройки v{{ run.agent_revision }} · Источники v{{ run.knowledge_revision }} · Промт {{ run.prompt_version[:12] }}</div>
+      {% if run.outcome %}
+      <div class="small text-break mt-2">{{ run.outcome.language }} · {{ run.outcome.intent }} · {{ run.outcome.classification }} · {{ run.outcome.action }} · {{ run.outcome.policy_state }} · {{ '%.2f'|format(run.outcome.confidence) }}</div>
+      <div class="small text-break mt-1">{{ run.outcome.policy_reason }} · Режим {{ run.outcome.mode }} · {{ 'Кандидат на автоматическое действие' if run.outcome.would_execute else 'Без автоматического действия' }}</div>
+      {% if run.outcome.reply %}<p class="small text-break mt-2 mb-1" style="white-space:pre-wrap">{{ run.outcome.reply }}</p>{% endif %}
+      {% for key, mismatch in run.outcome.mismatches.items() %}<div class="small text-danger text-break mt-1">{{ key }}: ожидалось {{ mismatch.expected }}, получено {{ mismatch.actual }}</div>{% endfor %}
+      {% endif %}
+    </div>{% endfor %}
+  </details>
+  {% endif %}
+  <div class="d-flex gap-2 flex-wrap mt-3">
+    <form method="post" action="{{ url_for('assistant.approve_example', agent_id=agent.id, example_id=example.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="agent_created_at" value="{{ agent.created_at.isoformat() }}"><input type="hidden" name="example_created_at" value="{{ example.created_at.isoformat() }}">{% if not example.approved %}<input type="hidden" name="approved" value="on">{% endif %}<button class="btn btn-sm btn-outline-secondary" {{ 'disabled' if example.running else '' }}><i class="bi bi-{{ 'x-circle' if example.approved else 'check2' }} me-1"></i>{{ 'Снять подтверждение' if example.approved else 'Подтвердить исправление' }}</button></form>
+    <details><summary class="small text-danger py-1">Удалить пример</summary><form method="post" action="{{ url_for('assistant.delete_example', agent_id=agent.id, example_id=example.id) }}" class="mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="agent_created_at" value="{{ agent.created_at.isoformat() }}"><input type="hidden" name="example_created_at" value="{{ example.created_at.isoformat() }}"><div class="form-check mb-2"><input id="example-delete-{{ example.id }}" type="checkbox" class="form-check-input" name="confirm_delete" required><label class="form-check-label small" for="example-delete-{{ example.id }}">Удалить пример и все прогоны</label></div><button class="btn btn-sm btn-outline-danger" {{ 'disabled' if example.running else '' }}><i class="bi bi-trash me-1"></i>Удалить</button></form></details>
+  </div>
+</section>
+{% else %}<p class="text-muted">Примеров пока нет</p>{% endfor %}

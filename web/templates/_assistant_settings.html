@@ -6,8 +6,20 @@
   <div class="col-md-4"><label class="form-label" for="agent-chat">ID чата</label><input id="agent-chat" name="chat_id" class="form-control" value="{{ agent.chat_id if agent else '' }}" placeholder="-100…" pattern="-\d+" required {{ 'readonly' if agent else '' }}></div>
   <div class="col-md-4"><label class="form-label" for="agent-channel">ID официального канала</label><input id="agent-channel" name="channel_id" class="form-control" value="{{ agent.channel_id if agent else '' }}" placeholder="-100…" pattern="-100\d+"></div>
   <div class="col-md-4"><label class="form-label" for="agent-mode">Режим</label><select id="agent-mode" name="mode" class="form-select">{% for mode in modes %}<option value="{{ mode }}" {{ 'selected' if (agent and agent.mode == mode) or (not agent and mode == 'OFF') else '' }}>{{ mode }}</option>{% endfor %}</select></div>
-  <div class="col-md-6"><label class="form-label" for="agent-language">Язык ответов без подписи</label><select id="agent-language" name="fallback_language" class="form-select">{% for value, label in [('AMHARIC','Амхарский'),('AMHARIC_LATIN','Амхарский латиницей'),('OROMO','Оромо'),('ENGLISH','Английский')] %}<option value="{{ value }}" {{ 'selected' if (agent and agent.fallback_language == value) or (not agent and value == 'AMHARIC') else '' }}>{{ label }}</option>{% endfor %}</select></div>
+  <div class="col-md-6"><label class="form-label" for="agent-language">Язык ответов без подписи</label><select id="agent-language" name="fallback_language" class="form-select">{% for value, label in language_labels.items() %}<option value="{{ value }}" {{ 'selected' if (agent and agent.fallback_language == value) or (not agent and value == 'ENGLISH') else '' }}>{{ label }}</option>{% endfor %}</select></div>
+  <div class="col-md-6"><label class="form-label" for="agent-language-profile">Языковой профиль</label><select id="agent-language-profile" name="language_profile" class="form-select"><option value="general" {{ 'selected' if not agent or agent.language_profile == 'general' else '' }}>Общий</option><option value="ethiopia" {{ 'selected' if agent and agent.language_profile == 'ethiopia' else '' }}>Эфиопия</option></select></div>
 </div>
+<details class="border-top mt-4 pt-3">
+  <summary class="fw-semibold">Язык, стиль и поддержка</summary>
+  <div class="row g-3 mt-1">
+    <div class="col-md-6"><label class="form-label" for="agent-custom-language">Название другого языка / диалекта</label><input id="agent-custom-language" name="custom_language" maxlength="80" class="form-control" value="{{ agent.custom_language if agent else '' }}"></div>
+    <div class="col-md-6"><label class="form-label" for="agent-support-contact">Официальный контакт поддержки (email / HTTPS)</label><input id="agent-support-contact" name="support_contact" maxlength="200" class="form-control" value="{{ agent.support_contact if agent else '' }}"></div>
+    <div class="col-12"><label class="form-label" for="agent-language-instructions">Стиль и региональная лексика</label><textarea id="agent-language-instructions" name="language_instructions" rows="3" maxlength="1500" class="form-control">{{ agent.language_instructions if agent else '' }}</textarea></div>
+    <div class="col-12"><label class="form-label" for="agent-glossary">Словарь: выражение = значение</label><textarea id="agent-glossary" name="glossary" rows="3" maxlength="4000" class="form-control">{{ agent.glossary if agent else '' }}</textarea></div>
+    <div class="col-md-6"><label class="form-label" for="agent-privacy-text">Проверенное предупреждение о личных данных</label><textarea id="agent-privacy-text" name="privacy_text" rows="3" maxlength="300" class="form-control">{{ agent.privacy_text if agent else '' }}</textarea></div>
+    <div class="col-md-6"><label class="form-label" for="agent-support-text">Проверенный ответ об обращении в поддержку</label><textarea id="agent-support-text" name="support_text" rows="3" maxlength="500" class="form-control">{{ agent.support_text if agent else '' }}</textarea></div>
+  </div>
+</details>
 <fieldset class="border-top mt-4 pt-3">
   <legend class="fs-6 fw-semibold">Разрешения</legend>
   <div class="row g-2">
