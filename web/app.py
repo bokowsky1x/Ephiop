@@ -34,6 +34,8 @@ def create_app(telegram_manager=None):
             if name not in agent_columns:
                 db.session.execute(text(f'ALTER TABLE ai_agents ADD COLUMN {name} BOOLEAN NOT NULL DEFAULT 1'))
         for name, definition in {
+            'allow_ban': 'BOOLEAN NOT NULL DEFAULT 0',
+            'ban_confidence': 'FLOAT NOT NULL DEFAULT 0.98',
             'language_profile': "VARCHAR(20) NOT NULL DEFAULT 'ethiopia'",
             'custom_language': "VARCHAR(80) NOT NULL DEFAULT ''",
             'language_instructions': "TEXT NOT NULL DEFAULT ''",
@@ -44,6 +46,19 @@ def create_app(telegram_manager=None):
         }.items():
             if name not in agent_columns:
                 db.session.execute(text(f'ALTER TABLE ai_agents ADD COLUMN {name} {definition}'))
+        decision_columns = {column['name'] for column in inspect(db.engine).get_columns('ai_decisions')}
+        for name, definition in {
+            'rule_ids': "TEXT NOT NULL DEFAULT '[]'", 'training_needed': 'BOOLEAN NOT NULL DEFAULT 0',
+            'training_status': "VARCHAR(20) NOT NULL DEFAULT 'OPEN'",
+        }.items():
+            if name not in decision_columns:
+                db.session.execute(text(f'ALTER TABLE ai_decisions ADD COLUMN {name} {definition}'))
+        if 'training_needed' not in decision_columns:
+            db.session.execute(text("UPDATE ai_decisions SET training_needed = 1 WHERE state = 'REVIEW' AND confidence > 0"))
+        example_columns = {column['name'] for column in inspect(db.engine).get_columns('ai_examples')}
+        for name, definition in {'guidance': "TEXT NOT NULL DEFAULT ''", 'kind': "VARCHAR(20) NOT NULL DEFAULT 'test'"}.items():
+            if name not in example_columns:
+                db.session.execute(text(f'ALTER TABLE ai_examples ADD COLUMN {name} {definition}'))
         task_columns = {column['name'] for column in inspect(db.engine).get_columns('scheduled_tasks')}
         for name, definition in {
             'once_at': 'DATETIME', 'send_immediately': 'BOOLEAN DEFAULT 0',
@@ -118,6 +133,7 @@ def create_app(telegram_manager=None):
     app.register_blueprint(settings_bp, url_prefix='/settings')
     from web.routes.assistant import assistant_bp
     from web.routes import assistant_examples
+    from web.routes import assistant_training
     app.register_blueprint(assistant_bp, url_prefix='/assistant')
 
     return app

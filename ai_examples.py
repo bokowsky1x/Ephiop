@@ -1,25 +1,34 @@
 from datetime import datetime, timedelta
 import hashlib
 import json
+import re
 from types import SimpleNamespace
 
 from ai_engine import (ACTIONS, CLASSIFICATIONS, INTENTS, LANGUAGES, AnalysisError,
                        analysis_resources, analyze, encoded_image, failure_message, redact)
 from ai_knowledge import verified_facts
 from ai_locales import has_language_hint, locale_payload
+from ai_moderation import moderation_rules
 from models import AIAgent, AIDecision, AIExample, AIReplayRun, db
 
 EXPECTED_VALUES = dict(language=LANGUAGES, intent=INTENTS, classification=CLASSIFICATIONS,
                        action=ACTIONS, policy_state=('READY', 'REVIEW', 'IGNORED'))
 
 
-def approved_examples(agent_id, exclude_id=None):
+def approved_examples(agent_id, exclude_id=None, message=None):
     query = AIExample.query.filter_by(agent_id=agent_id, approved=True)
     if exclude_id is not None:
         query = query.filter(AIExample.id != exclude_id)
-    rows = query.order_by(AIExample.id.desc()).limit(5).all()
+    rows = query.order_by(AIExample.id.desc()).limit(50).all()
+    terms = set(re.findall(r'[^\W\d_]{2,}', (message or '').replace('[PRIVATE]', '').casefold()))
+    if terms:
+        def relevance(row):
+            words = set(re.findall(r'[^\W\d_]{2,}', row.text.replace('[PRIVATE]', '').casefold()))
+            return len(terms & words), row.id
+        rows.sort(key=relevance, reverse=True)
+    rows = rows[:5]
     return [dict(message=row.text[:800], reply_context=row.reply_context[:500], expected=row.expected,
-                 reply=row.corrected_reply[:500], has_image=bool(row.image)) for row in reversed(rows)]
+                 reply=row.corrected_reply[:500], moderator_guidance=row.guidance, has_image=bool(row.image)) for row in reversed(rows)]
 
 
 def validate_approval(example):
@@ -30,11 +39,12 @@ def validate_approval(example):
         raise ValueError('Эта тема требует проверки человеком')
     if labels['action'] == 'DELETE' and labels['classification'] not in ('PERSONAL_DATA', 'PAYMENT_DATA', 'IDENTITY_DOCUMENT', 'SCAM'):
         raise ValueError('Безопасные сообщения не являются примером удаления')
+    if labels['action'] == 'BAN':
+        raise ValueError('Примеры банов добавляются в отдельной вкладке «Модерация»')
     if redact(example.corrected_reply, 801) != example.corrected_reply:
         raise ValueError('Удалите личные данные и контакты из исправленного ответа')
     if len(example.corrected_reply.encode('utf-16-le')) // 2 > 800:
         raise ValueError('Исправленный ответ: максимум 800 символов UTF-16')
-    import re
     if re.search(r'https?://|www\.|t\.me/', example.corrected_reply, re.I):
         raise ValueError('Контакты задаются в настройках, а ссылки — в официальных источниках')
     if labels['action'] in ('REPLY', 'WARN') and not example.corrected_reply.strip():
@@ -45,7 +55,7 @@ def validate_approval(example):
 
 def invalidate_decisions(agent):
     agent.revision += 1
-    AIDecision.query.filter_by(agent_id=agent.id).filter(AIDecision.state.in_(('READY', 'REVIEW'))).update(
+    AIDecision.query.filter_by(agent_id=agent.id).filter(AIDecision.state.in_(('READY', 'REVIEW', 'OBSERVED'))).update(
         {'state': 'STALE', 'result': 'Подтверждённые примеры изменились. Нужен новый анализ'}, synchronize_session='fetch')
 
 
@@ -56,14 +66,15 @@ def replay_snapshot(app, agent, example):
                                        sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     agent_values = {column.name: getattr(agent, column.name) for column in AIAgent.__table__.columns}
     facts = verified_facts(agent)
+    rules = moderation_rules(agent.id)
     hint = has_language_hint(example.text)
     payload = dict(message=example.text,
                    reply_to=dict(text=example.reply_context, is_ai=False) if example.reply_context else None,
                    preferred_language=agent.fallback_language, has_user_language_hint=hint,
-                   permissions=dict(allow_delete=agent.allow_delete, support_router=agent.support_router),
+                   permissions=dict(allow_delete=agent.allow_delete, allow_ban=agent.allow_ban, support_router=agent.support_router),
                    recent_messages=[], user_history=[], verified_facts=facts, now=datetime.utcnow().isoformat(),
-                   **locale, approved_examples=approved_examples(agent.id, exclude_id=example.id))
-    return dict(agent=agent_values, payload=payload, facts=facts, expected=dict(example.expected),
+                   **locale, moderation_rules=rules, approved_examples=approved_examples(agent.id, exclude_id=example.id, message=example.text))
+    return dict(agent=agent_values, payload=payload, facts=facts, rules=rules, expected=dict(example.expected),
                 image=example.image, hint=hint, version=version)
 
 
@@ -83,7 +94,7 @@ async def evaluate_replay(app, run_id, created_at, snapshot):
         decision = SimpleNamespace(**result, has_image=bool(image))
         if decision.language in ('UNKNOWN', 'MIXED') or (image and not snapshot['hint']):
             decision.language = agent.fallback_language
-        policy_state, reason = policy(agent, decision, snapshot['facts'])
+        policy_state, reason = policy(agent, decision, snapshot['facts'], snapshot['rules'])
         outcome = {key: getattr(decision, key) for key in EXPECTED_VALUES if key != 'policy_state'}
         outcome.update(policy_state=policy_state, confidence=decision.confidence, reply=redact(decision.reply, 1000),
                        reason=redact(decision.reason, 500), policy_reason=reason,

@@ -13,6 +13,7 @@
     <div class="col-md-4"><label class="form-label" for="expected-{{ key }}">{{ label }}</label><select id="expected-{{ key }}" name="expected_{{ key }}" class="form-select"><option value="">Не проверять</option>{% for value in expected_values[key] %}<option value="{{ value }}" {{ 'selected' if prefill.expected.get(key) == value else '' }}>{{ language_labels.get(value, value) if key == 'language' else value }}</option>{% endfor %}</select></div>
     {% endfor %}
     <div class="col-12"><label class="form-label" for="example-corrected-reply">Исправленный ответ модератора</label><textarea id="example-corrected-reply" name="corrected_reply" class="form-control" rows="3" maxlength="800">{{ prefill.corrected_reply }}</textarea></div>
+    <div class="col-12"><label class="form-label" for="example-guidance">Пояснение: почему и как поступать</label><textarea id="example-guidance" name="guidance" class="form-control" rows="3" maxlength="600"></textarea></div>
     <div class="col-12"><div class="form-check"><input id="example-anonymized" name="anonymized" class="form-check-input" type="checkbox" required><label for="example-anonymized" class="form-check-label">Имена, телефоны, реквизиты и идентификаторы удалены из текста и изображения</label></div></div>
     <div class="col-12"><div class="form-check"><input id="example-approved" name="approved" class="form-check-input" type="checkbox"><label for="example-approved" class="form-check-label">Проверено модератором: использовать как пример для этого чата</label></div></div>
     <div class="col-12"><button class="btn btn-primary" type="submit"><i class="bi bi-plus-circle me-1"></i>Сохранить пример</button></div>
@@ -26,6 +27,7 @@
   {% if example.reply_context %}<div class="small text-muted text-break mb-2">Контекст: {{ example.reply_context }}</div>{% endif %}
   <div class="d-flex gap-2 flex-wrap mb-3">{% for key, value in example.expected.items() %}<span class="small text-break">{{ key }}: <strong>{{ value }}</strong></span>{% endfor %}</div>
   {% if example.corrected_reply %}<p class="text-break small" style="white-space:pre-wrap">Ответ модератора: {{ example.corrected_reply }}</p>{% endif %}
+  {% if example.guidance %}<p class="text-break small" style="white-space:pre-wrap">Пояснение: {{ example.guidance }}</p>{% endif %}
   <form method="post" action="{{ url_for('assistant.run_example', agent_id=agent.id, example_id=example.id) }}" class="mb-3">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="agent_created_at" value="{{ agent.created_at.isoformat() }}"><input type="hidden" name="example_created_at" value="{{ example.created_at.isoformat() }}"><input type="hidden" name="request_token" value="{{ replay_tokens[example.id] }}">
     <div class="form-check mb-2"><input id="run-confirm-{{ example.id }}" class="form-check-input" type="checkbox" name="confirm_ai" required><label for="run-confirm-{{ example.id }}" class="form-check-label small">Разрешаю платный запрос OpenAI с этим обезличенным примером. Telegram не используется.</label></div>

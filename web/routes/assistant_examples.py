@@ -67,7 +67,7 @@ def add_example(agent_id):
         if AIExample.query.filter_by(agent_id=agent_id).count() >= 50:
             raise ValueError('Не больше 50 примеров на ассистента. Удалите ненужные')
         values = {}
-        for field, limit in (('title', 100), ('text', 2000), ('reply_context', 1500), ('corrected_reply', 800)):
+        for field, limit in (('title', 100), ('text', 2000), ('reply_context', 1500), ('corrected_reply', 800), ('guidance', 600)):
             value = request.form.get(field, '').strip()
             if len(value) > limit:
                 raise ValueError(f'{field}: максимум {limit} символов')

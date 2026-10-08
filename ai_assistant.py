@@ -10,6 +10,7 @@ from telethon import errors
 from ai_engine import AnalysisError, analyze, failure_message, fingerprint, image_content, redact
 from ai_knowledge import ingest, telegram_source, verified_facts, archive
 from ai_locales import LANGUAGE_LABELS, NOTICE_LANGUAGES, custom_notice, has_language_hint, locale_payload
+from ai_moderation import matched_rules, moderation_rules
 from models import Account, AIAgent, AIDecision, AIFact, AIMessage, AIUserContext, db
 
 INFO_INTENTS = {'INFORMATION', 'POST_DISCUSSION', 'PROMO_INFO_REQUEST', 'BONUS_INFO_REQUEST',
@@ -17,7 +18,7 @@ INFO_INTENTS = {'INFORMATION', 'POST_DISCUSSION', 'PROMO_INFO_REQUEST', 'BONUS_I
 SUPPORT_INTENTS = {'DEPOSIT_PROBLEM', 'WITHDRAWAL_PROBLEM', 'BALANCE_PROBLEM', 'ACCOUNT_PROBLEM', 'SUPPORT_REQUEST', 'TECHNICAL_PROBLEM'}
 SCAM_INTENTS = {'SCAM', 'FAKE_AGENT', 'FAKE_SUPPORT'}
 SENSITIVE = {'PERSONAL_DATA', 'PAYMENT_DATA', 'IDENTITY_DOCUMENT'}
-FINAL_STATES = {'SENT', 'DELETED', 'UNCERTAIN', 'RUNNING'}
+FINAL_STATES = {'SENT', 'DELETED', 'BANNED', 'UNCERTAIN', 'RUNNING'}
 logger = logging.getLogger(__name__)
 DELETE_FLAGS = {'PERSONAL_DATA': 'delete_personal_data', 'PAYMENT_DATA': 'delete_payment_data',
                 'IDENTITY_DOCUMENT': 'delete_identity_documents'}
@@ -81,7 +82,9 @@ def privacy_warning(language, payment=False, support=True, agent=None):
     return warning
 
 
-def policy(agent, decision, facts):
+def policy(agent, decision, facts, rules=None):
+    rules = moderation_rules(getattr(agent, 'id', None)) if rules is None else rules
+    community_violation = decision.classification == 'RULE_VIOLATION' and decision.intent == 'COMMUNITY_RULE_VIOLATION'
     sensitive = decision.classification in SENSITIVE
     if sensitive:
         decision.intent = decision.classification
@@ -96,10 +99,20 @@ def policy(agent, decision, facts):
         return 'REVIEW', 'Проверка модератором'
     if decision.action == 'IGNORE' or decision.intent in {'CONTEST_ANSWER', 'SIMPLE_REACTION'}:
         return 'IGNORED', 'Ответ не нужен'
+    if decision.action == 'BAN':
+        if not community_violation or not matched_rules(decision, rules, 'BAN') or not agent.allow_ban:
+            return 'REVIEW', 'Бан не разрешён или нет подтверждённого правила бана'
+        if decision.has_image and not agent.vision:
+            return 'REVIEW', 'Изображение требует проверки: Vision отключён'
+        threshold = max(agent.ban_confidence, agent.vision_confidence) if decision.has_image else agent.ban_confidence
+        if decision.confidence < threshold:
+            return 'REVIEW', 'Недостаточная уверенность для бана'
+        return 'READY', 'Рекомендован бан по правилу сообщества; права и автор проверяются перед действием'
     if decision.action == 'DELETE':
         scam = decision.intent in SCAM_INTENTS and agent.scam_detection
+        community_delete = community_violation and matched_rules(decision, rules, 'DELETE')
         threshold = agent.vision_confidence if decision.has_image else agent.moderation_confidence
-        if not (sensitive or scam) or not agent.allow_delete or (decision.has_image and not agent.vision):
+        if not (sensitive or scam or community_delete) or not agent.allow_delete or (decision.has_image and not agent.vision):
             return 'REVIEW', 'Автоудаление не разрешено для этой категории'
         if decision.confidence < threshold:
             return 'REVIEW', 'Недостаточная уверенность для удаления'
@@ -192,7 +205,7 @@ class AIAssistant:
                               has_image=has_image, model=self.manager.app.config.get('OPENAI_MODEL', ''))
         db.session.add(decision)
         AIDecision.query.filter_by(agent_id=agent.id, message_id=message.id).filter(
-            AIDecision.state.in_(('READY', 'REVIEW', 'OBSERVED'))).update({'state': 'STALE'}, synchronize_session='fetch')
+            AIDecision.state.in_(('READY', 'REVIEW', 'OBSERVED'))).update({'state': 'STALE', 'training_status': 'SUPERSEDED'}, synchronize_session='fetch')
         AIMessage.query.filter_by(agent_id=agent.id).filter(AIMessage.created_at < datetime.utcnow() - timedelta(days=7)).delete(synchronize_session='fetch')
         AIDecision.query.filter_by(agent_id=agent.id).filter(AIDecision.created_at < datetime.utcnow() - timedelta(days=30),
             AIDecision.state != 'RUNNING').delete(synchronize_session='fetch')
@@ -237,8 +250,9 @@ class AIAssistant:
             from ai_examples import approved_examples
             result = await analyze(self.manager.app, dict(message=text, reply_to=reply,
                 preferred_language=preferred_language, has_user_language_hint=language_hint,
-                **locale_payload(agent), approved_examples=approved_examples(agent.id),
-                permissions=dict(allow_delete=agent.allow_delete, support_router=agent.support_router),
+                **locale_payload(agent), approved_examples=approved_examples(agent.id, message=text),
+                moderation_rules=moderation_rules(agent.id),
+                permissions=dict(allow_delete=agent.allow_delete, allow_ban=agent.allow_ban, support_router=agent.support_router),
                 recent_messages=[dict(text=row.text, is_ai=row.is_ai) for row in reversed(history)],
                 user_history=[row.text for row in reversed(user_history)], verified_facts=facts,
                 now=datetime.utcnow().isoformat()), image)
@@ -250,6 +264,7 @@ class AIAssistant:
             stage = 'Проверка результата анализа'
             decision.reason = redact(decision.reason, 500)
             decision.state, decision.result = policy(agent, decision, verified_facts(agent))
+            decision.training_needed = decision.state == 'REVIEW'
             decision.reply = redact(decision.reply, 1000) if decision.intent not in SUPPORT_INTENTS | SENSITIVE else decision.reply
             if decision.intent in SENSITIVE or decision.classification in SENSITIVE:
                 record.text = '[PRIVATE MESSAGE]'
@@ -283,7 +298,7 @@ class AIAssistant:
         if memory.last_reply_at and (now - memory.last_reply_at).total_seconds() < agent.user_cooldown:
             return 'Пауза между ответами пользователю'
         last = AIDecision.query.filter_by(agent_id=agent.id, intent=decision.intent).filter(
-            AIDecision.state.in_(('SENT', 'DELETED')), AIDecision.completed_at >= now - timedelta(seconds=agent.intent_cooldown),
+            AIDecision.state.in_(('SENT', 'DELETED', 'BANNED')), AIDecision.completed_at >= now - timedelta(seconds=agent.intent_cooldown),
             AIDecision.id != decision.id
         ).first()
         return 'Пауза между одинаковыми темами' if last else None
@@ -313,8 +328,8 @@ class AIAssistant:
             db.session.commit()
             return decision.state
         candidate = action if manual else decision.action
-        if candidate not in ('REPLY', 'DELETE', 'WARN'):
-            raise AnalysisError('Выберите ответ или удаление')
+        if candidate not in ('REPLY', 'DELETE', 'BAN', 'WARN'):
+            raise AnalysisError('Выберите ответ, удаление или бан')
         facts = verified_facts(agent)
         if candidate in ('REPLY', 'WARN'):
             if decision.action not in ('REPLY', 'WARN'):
@@ -324,13 +339,19 @@ class AIAssistant:
             state, reason = policy(agent, decision, facts)
             if state != 'READY':
                 raise AnalysisError(reason)
+        elif candidate == 'BAN':
+            if decision.action != 'BAN':
+                raise AnalysisError('Нет подготовленного решения о бане')
+            state, reason = policy(agent, decision, facts)
+            if state != 'READY':
+                raise AnalysisError(reason)
         elif not agent.allow_delete:
             raise AnalysisError('Удаление сообщений не разрешено в настройках')
         memory = AIUserContext.query.filter_by(agent_id=agent.id, user_id=decision.user_id).first()
         if not memory:
             memory = AIUserContext(agent_id=agent.id, user_id=decision.user_id)
             db.session.add(memory)
-        if candidate != 'DELETE':
+        if candidate not in ('DELETE', 'BAN'):
             pause = self.cooldown(agent, decision, memory)
             if pause:
                 decision.state, decision.result = 'IGNORED', pause
@@ -346,16 +367,31 @@ class AIAssistant:
             permissions = await asyncio.wait_for(client.get_permissions(int(agent.chat_id), 'me'), 10)
             if not permissions or not permissions.delete_messages:
                 raise AnalysisError('У аккаунта нет права удалять сообщения в этом чате')
+        if candidate == 'BAN':
+            if not agent.chat_id.startswith('-100'):
+                raise AnalysisError('Бан доступен только в супергруппе Telegram')
+            sender = getattr(current, 'sender_id', None)
+            owned_ids = {getattr(value, '_self_id', None) for value in self.manager.clients.values()}
+            if type(sender) is not int or sender <= 0 or str(sender) != decision.user_id or sender in owned_ids:
+                raise AnalysisError('Автор не подтверждён либо это канал или собственный аккаунт')
+            permissions = await asyncio.wait_for(client.get_permissions(int(agent.chat_id), 'me'), 10)
+            if not permissions or not getattr(permissions, 'ban_users', False):
+                raise AnalysisError('У аккаунта нет права блокировать участников')
+            target_permissions = await asyncio.wait_for(client.get_permissions(int(agent.chat_id), sender), 10)
+            if not target_permissions or getattr(target_permissions, 'is_admin', None) is not False or getattr(target_permissions, 'is_creator', None) is not False:
+                raise AnalysisError('Нельзя банить администратора или участника с неподтверждённой ролью')
         db.session.expire_all()
         if not self.account_ready(agent) or agent.revision != decision.agent_revision:
             raise AnalysisError('Настройки изменились. Действие отменено')
-        if candidate != 'DELETE' and decision.intent in INFO_INTENTS:
+        if candidate not in ('DELETE', 'BAN') and decision.intent in INFO_INTENTS:
             fresh_ids = {fact['id'] for fact in verified_facts(agent)}
             if decision.knowledge_revision != agent.knowledge_revision or any(value not in fresh_ids for value in decision.fact_ids):
                 raise AnalysisError('Официальные источники устарели или изменились')
         gate = [AIAgent.revision == decision.agent_revision, AIAgent.consent == True,
                 AIAgent.mode.in_(('ASSIST', 'AUTO'))]
-        if candidate != 'DELETE' and decision.intent in INFO_INTENTS:
+        if candidate == 'BAN':
+            gate.append(AIAgent.allow_ban == True)
+        if candidate not in ('DELETE', 'BAN') and decision.intent in INFO_INTENTS:
             gate.append(AIAgent.knowledge_revision == decision.knowledge_revision)
         claimed = AIDecision.query.filter_by(id=decision.id).filter(
             AIDecision.state.in_(('READY', 'REVIEW')), AIDecision.agent.has(db.and_(*gate))
@@ -365,12 +401,15 @@ class AIAssistant:
             raise AnalysisError('Решение отменено или настройки изменились')
         db.session.commit()
         try:
-            if candidate == 'DELETE':
+            if candidate == 'BAN':
+                await asyncio.wait_for(client.edit_permissions(int(agent.chat_id), int(decision.user_id), view_messages=False), 20)
+                decision.state, decision.result = 'BANNED', 'Участник заблокирован по правилу сообщества. Сообщение отдельно не удалялось'
+            elif candidate == 'DELETE':
                 await asyncio.wait_for(client.delete_messages(int(agent.chat_id), [decision.message_id], revoke=True), 20)
                 decision.state, decision.result = 'DELETED', 'Сообщение удалено'
                 decision.completed_at = datetime.utcnow()
                 db.session.commit()
-                if decision.confidence >= agent.moderation_confidence and not self.cooldown(agent, decision, memory):
+                if (decision.classification in SENSITIVE or decision.intent in SCAM_INTENTS) and decision.confidence >= agent.moderation_confidence and not self.cooldown(agent, decision, memory):
                     try:
                         warning = privacy_warning(decision.language, payment=decision.classification == 'PAYMENT_DATA', support=agent.support_router, agent=agent)
                         if not warning:
@@ -400,8 +439,8 @@ class AIAssistant:
         except Exception as exc:
             db.session.rollback()
             decision = db.session.get(AIDecision, decision_id)
-            if decision.state == 'DELETED':
-                decision.result = 'Удаление подтверждено, последующие действия не завершены'
+            if decision.state in ('DELETED', 'BANNED'):
+                decision.result = 'Удаление подтверждено, последующие действия не завершены' if decision.state == 'DELETED' else 'Бан подтверждён, последующие действия не завершены'
             else:
                 decision.state = 'ERROR' if isinstance(exc, errors.RPCError) else 'UNCERTAIN'
                 decision.result = 'Telegram отклонил действие' if decision.state == 'ERROR' else 'Результат не подтверждён. Проверьте Telegram; автоматического повтора нет'
@@ -457,5 +496,5 @@ class AIAssistant:
                     if str(event.chat_id) == agent.chat_id:
                         AIMessage.query.filter_by(agent_id=agent.id).filter(AIMessage.message_id.in_(event.deleted_ids)).delete(synchronize_session='fetch')
                         AIDecision.query.filter_by(agent_id=agent.id).filter(AIDecision.message_id.in_(event.deleted_ids),
-                            AIDecision.state.in_(('READY', 'REVIEW', 'OBSERVED'))).update({'state': 'STALE'}, synchronize_session='fetch')
+                            AIDecision.state.in_(('READY', 'REVIEW', 'OBSERVED'))).update({'state': 'STALE', 'training_status': 'SUPERSEDED'}, synchronize_session='fetch')
                     db.session.commit()

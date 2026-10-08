@@ -25,7 +25,7 @@ def message(message_id=1, text='Hi', **kwargs):
 
 def decision_result(**kwargs):
     data = dict(language='ENGLISH', intent='GREETING', confidence=0.99, action='REPLY', classification='SAFE',
-                reply='Hello!', reason='Initial greeting', fact_ids=[])
+                reply='Hello!', reason='Initial greeting', fact_ids=[], rule_ids=[])
     data.update(kwargs)
     return data
 

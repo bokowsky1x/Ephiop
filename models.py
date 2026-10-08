@@ -280,6 +280,8 @@ class AIAgent(db.Model):
     privacy_text = db.Column(db.Text, default='', nullable=False)
     scam_detection = db.Column(db.Boolean, default=True, nullable=False)
     allow_delete = db.Column(db.Boolean, default=False, nullable=False)
+    allow_ban = db.Column(db.Boolean, default=False, nullable=False)
+    ban_confidence = db.Column(db.Float, default=0.98, nullable=False)
     delete_personal_data = db.Column(db.Boolean, default=True, nullable=False)
     delete_payment_data = db.Column(db.Boolean, default=True, nullable=False)
     delete_identity_documents = db.Column(db.Boolean, default=True, nullable=False)
@@ -373,6 +375,9 @@ class AIDecision(db.Model):
     reply = db.Column(db.Text, default='')
     reason = db.Column(db.Text, default='')
     fact_ids = db.Column(db.JSON, default=list)
+    rule_ids = db.Column(db.JSON, default=list)
+    training_needed = db.Column(db.Boolean, default=False, nullable=False)
+    training_status = db.Column(db.String(20), default='OPEN', nullable=False)
     has_image = db.Column(db.Boolean, default=False)
     state = db.Column(db.String(20), default='ANALYZING', nullable=False, index=True)
     result = db.Column(db.Text, default='')
@@ -391,11 +396,25 @@ class AIExample(db.Model):
     image = db.Column(db.LargeBinary)
     expected = db.Column(db.JSON, default=dict, nullable=False)
     corrected_reply = db.Column(db.Text, default='', nullable=False)
+    guidance = db.Column(db.Text, default='', nullable=False)
+    kind = db.Column(db.String(20), default='test', nullable=False)
     approved = db.Column(db.Boolean, default=False, nullable=False)
     source_decision_id = db.Column(db.Integer)
     running = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     runs = db.relationship('AIReplayRun', cascade='all, delete-orphan', order_by='AIReplayRun.id.desc()')
+
+
+class AIModerationRule(db.Model):
+    __tablename__ = 'ai_moderation_rules'
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey('ai_agents.id'), nullable=False, index=True)
+    title = db.Column(db.String(100), nullable=False)
+    example = db.Column(db.Text, nullable=False)
+    guidance = db.Column(db.Text, nullable=False)
+    action = db.Column(db.String(20), nullable=False)
+    enabled = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
 class AIReplayRun(db.Model):

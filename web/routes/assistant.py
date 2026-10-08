@@ -9,12 +9,12 @@ from ai_engine import redact
 from ai_locales import LANGUAGE_LABELS, NOTICE_LANGUAGES, parse_glossary, valid_contact
 from ai_health import checks, telegram_checks
 from ai_knowledge import STATUSES, archive, import_site, ingest, source_url_allowed, telegram_source
-from models import Account, AIAgent, AIDecision, AIExample, AIReplayRun, AIFact, AIFactHistory, AIMessage, AIUserContext, db
+from models import Account, AIAgent, AIDecision, AIExample, AIReplayRun, AIModerationRule, AIFact, AIFactHistory, AIMessage, AIUserContext, db
 from web.routes.profile import run
 
 assistant_bp = Blueprint('assistant', __name__)
 MODES = ('OFF', 'OBSERVE', 'ASSIST', 'AUTO')
-FLAGS = ('consent', 'community_replies', 'support_router', 'information', 'vision', 'scam_detection', 'allow_delete')
+FLAGS = ('consent', 'community_replies', 'support_router', 'information', 'vision', 'scam_detection', 'allow_delete', 'allow_ban')
 DELETE_FLAGS = ('delete_personal_data', 'delete_payment_data', 'delete_identity_documents')
 
 
@@ -101,6 +101,10 @@ def settings(agent):
     if mode != 'OFF' and (not flags['consent'] or not current_app.config.get('OPENAI_API_KEY')):
         raise ValueError('Для анализа нужны OPENAI_API_KEY и разрешение передачи данных в OpenAI')
     numbers = {}
+    ban_confidence = float(data.get('ban_confidence', agent.ban_confidence or 0.98))
+    if not math.isfinite(ban_confidence) or not 0.95 <= ban_confidence <= 1:
+        raise ValueError('Порог бана: от 0.95 до 1')
+    numbers['ban_confidence'] = ban_confidence
     for field in ('reply_confidence', 'moderation_confidence', 'vision_confidence'):
         value = float(data.get(field, '0'))
         if not math.isfinite(value) or not 0.5 <= value <= 1:
@@ -159,7 +163,7 @@ def edit(agent_id):
         except Exception as exc:
             fail(exc)
     tab = request.args.get('tab', 'journal')
-    if tab not in ('journal', 'review', 'knowledge', 'deleted', 'scam', 'examples'):
+    if tab not in ('journal', 'review', 'knowledge', 'deleted', 'scam', 'examples', 'training', 'moderation'):
         tab = 'journal'
     query = AIDecision.query.filter_by(agent_id=agent.id)
     if tab == 'review':
@@ -170,8 +174,12 @@ def edit(agent_id):
         query = query.filter(AIDecision.intent.in_(('SCAM', 'FAKE_AGENT', 'FAKE_SUPPORT')))
     stats = db.session.query(AIDecision.intent, db.func.count(AIDecision.id)).filter_by(agent_id=agent.id).group_by(AIDecision.intent).all()
     from web.routes.assistant_examples import example_context
+    from web.routes.assistant_training import training_context
     return render_template('assistant_edit.html', agent=agent, modes=MODES, csrf_token=csrf(), tab=tab,
         **(example_context(agent) if tab == 'examples' else {}),
+        **(training_context(agent, tab) if tab in ('training', 'moderation') else {}),
+        training_count=AIDecision.query.filter_by(agent_id=agent.id, training_needed=True, training_status='OPEN').filter(
+            ~AIDecision.state.in_(('RUNNING', 'SENT', 'DELETED', 'BANNED', 'UNCERTAIN'))).count(),
         accounts=Account.query.filter_by(status='authorized').all(),
         decisions=query.order_by(AIDecision.id.desc()).limit(100).all(),
         facts=AIFact.query.filter_by(agent_id=agent.id).order_by(AIFact.id.desc()).limit(100).all(),
@@ -197,7 +205,7 @@ def check(agent_id):
         if not client or not manager.client_connected(client):
             raise ValueError('Аккаунт не подключён к Telegram')
         revision, account_id = agent.revision, agent.account_id
-        rows = run(telegram_checks(client, agent.chat_id, agent.channel_id, agent.allow_delete), timeout=25)
+        rows = run(telegram_checks(client, agent.chat_id, agent.channel_id, agent.allow_delete, agent.allow_ban), timeout=25)
         db.session.expire_all()
         if agent.revision != revision or agent.account_id != account_id:
             raise ValueError('Настройки изменились во время проверки. Запустите проверку снова')
@@ -235,7 +243,7 @@ def delete_assignment(agent_id, created_at=None):
     AIFactHistory.query.filter(AIFactHistory.fact_id.in_(fact_ids)).delete(synchronize_session='fetch')
     AIFact.query.filter_by(agent_id=agent_id).update({'related_id': None}, synchronize_session='fetch')
     AIReplayRun.query.filter(AIReplayRun.example_id.in_(db.session.query(AIExample.id).filter_by(agent_id=agent_id))).delete(synchronize_session='fetch')
-    for model in (AIExample, AIDecision, AIMessage, AIUserContext, AIFact):
+    for model in (AIModerationRule, AIExample, AIDecision, AIMessage, AIUserContext, AIFact):
         model.query.filter_by(agent_id=agent_id).delete(synchronize_session='fetch')
     if not AIAgent.query.filter_by(id=agent_id, revision=revision, mode='OFF').delete(synchronize_session='fetch'):
         raise ValueError('Настройки изменились. Удаление отменено')
@@ -288,7 +296,7 @@ def review(decision_id):
             AIDecision.query.filter_by(id=decision.id).filter(AIDecision.state.in_(('REVIEW', 'OBSERVED', 'READY'))).update(
                 {'state': 'DISMISSED', 'result': 'Отклонено модератором'}, synchronize_session='fetch')
             db.session.commit()
-        elif action in ('REPLY', 'DELETE'):
+        elif action in ('REPLY', 'DELETE', 'BAN'):
             if request.form.get('confirm') != 'on':
                 raise ValueError('Подтвердите действие в Telegram')
             manager = current_app.telegram_manager
@@ -297,7 +305,7 @@ def review(decision_id):
             # Release the route's snapshot before the Telegram loop writes the decision.
             db.session.commit()
             state = run(manager.assistant().execute(decision.id, action, created_at=created_at), timeout=65)
-            flash('Результат: ' + state, 'success' if state in ('SENT', 'DELETED') else 'warning')
+            flash('Результат: ' + state, 'success' if state in ('SENT', 'DELETED', 'BANNED') else 'warning')
         else:
             raise ValueError('Неизвестное действие')
     except Exception as exc:

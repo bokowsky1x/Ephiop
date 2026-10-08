@@ -16,9 +16,9 @@ INTENTS = ('GREETING', 'CASUAL_CHAT', 'FOOTBALL_DISCUSSION', 'POST_DISCUSSION', 
            'GAMBLING_INSTRUCTIONS', 'DEPOSIT_PROBLEM', 'WITHDRAWAL_PROBLEM', 'BALANCE_PROBLEM',
            'ACCOUNT_PROBLEM', 'TECHNICAL_PROBLEM', 'SUPPORT_REQUEST', 'COMPLAINT', 'PERSONAL_DATA',
            'PAYMENT_DATA', 'IDENTITY_DOCUMENT', 'SCAM', 'FAKE_AGENT', 'FAKE_SUPPORT', 'SPAM',
-           'CONTEST_ANSWER', 'SIMPLE_REACTION', 'UNKNOWN')
-ACTIONS = ('REPLY', 'IGNORE', 'DELETE', 'WARN', 'MODERATE', 'ESCALATE', 'HUMAN_REVIEW')
-CLASSIFICATIONS = ('SAFE', 'PAYMENT_SCREENSHOT', 'PAYMENT_DATA', 'PERSONAL_DATA', 'IDENTITY_DOCUMENT', 'SCAM', 'UNKNOWN')
+           'CONTEST_ANSWER', 'SIMPLE_REACTION', 'COMMUNITY_RULE_VIOLATION', 'UNKNOWN')
+ACTIONS = ('REPLY', 'IGNORE', 'DELETE', 'BAN', 'WARN', 'MODERATE', 'ESCALATE', 'HUMAN_REVIEW')
+CLASSIFICATIONS = ('SAFE', 'PAYMENT_SCREENSHOT', 'PAYMENT_DATA', 'PERSONAL_DATA', 'IDENTITY_DOCUMENT', 'SCAM', 'RULE_VIOLATION', 'UNKNOWN')
 _PRIVATE = re.compile(
     r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b|(?<!\w)\+?\d[\d ()-]{7,}\d(?!\w)|'
     r'(?i:\b(?:otp|transaction\s*(?:id)?|account\s*number|card\s*number|password|pin)\s*[:=#]?\s*[\w-]{4,})'
@@ -170,7 +170,8 @@ async def analyze(app, payload, image=None):
     output_schema = schema(dict(language=enum(LANGUAGES), intent=enum(INTENTS), action=enum(ACTIONS),
                                 confidence=dict(type='number'), classification=enum(CLASSIFICATIONS),
                                 reply=dict(type='string'), reason=dict(type='string'),
-                                fact_ids=dict(type='array', items=dict(type='integer'))))
+                                fact_ids=dict(type='array', items=dict(type='integer')),
+                                rule_ids=dict(type='array', items=dict(type='integer'))))
     result = await ask(app, 'community_decision', instructions, payload, output_schema, image)
     if any(result[key] not in values for key, values in (
         ('language', LANGUAGES), ('intent', INTENTS), ('action', ACTIONS), ('classification', CLASSIFICATIONS))):
@@ -182,6 +183,7 @@ async def analyze(app, payload, image=None):
         raise AnalysisError('AI вернул неверный текст')
     if len(result['reply'].encode('utf-16-le')) // 2 > 800 or len(result['reason']) > 500:
         raise AnalysisError('AI вернул слишком длинный ответ')
-    if not isinstance(result['fact_ids'], list) or len(result['fact_ids']) > 3 or any(type(value) is not int for value in result['fact_ids']):
-        raise AnalysisError('AI вернул неверные ссылки на источники')
+    for key in ('fact_ids', 'rule_ids'):
+        if not isinstance(result[key], list) or len(result[key]) > 3 or any(type(value) is not int for value in result[key]):
+            raise AnalysisError('AI вернул неверные ссылки на источники или правила')
     return result

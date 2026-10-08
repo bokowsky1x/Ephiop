@@ -23,11 +23,11 @@
 <fieldset class="border-top mt-4 pt-3">
   <legend class="fs-6 fw-semibold">Разрешения</legend>
   <div class="row g-2">
-    {% for key, label, checked in [('community_replies','Приветствия и нейтральная беседа',false),('support_router','Направление в официальную поддержку',true),('information','Справочные ответы по подтверждённым источникам',true),('vision','Анализ изображений в OpenAI',false),('scam_detection','Выявление мошенников',true),('allow_delete','Удаление сообщений',false)] %}
+    {% for key, label, checked in [('community_replies','Приветствия и нейтральная беседа',false),('support_router','Направление в официальную поддержку',true),('information','Справочные ответы по подтверждённым источникам',true),('vision','Анализ изображений в OpenAI',false),('scam_detection','Выявление мошенников',true),('allow_delete','Удаление сообщений',false),('allow_ban','Бессрочный бан участников по правилам сообщества',false)] %}
     <div class="col-lg-6"><div class="form-check"><input class="form-check-input" type="checkbox" id="agent-{{ key }}" name="{{ key }}" {{ 'checked' if (agent and agent[key]) or (not agent and checked) else '' }}><label class="form-check-label" for="agent-{{ key }}">{{ label }}</label></div></div>
     {% endfor %}
     <div class="col-12 mt-3"><div class="form-check"><input class="form-check-input" type="checkbox" id="agent-consent" name="consent" {{ 'checked' if agent and agent.consent else '' }}><label class="form-check-label" for="agent-consent">Разрешаю передачу текста и выбранных изображений чата в OpenAI</label></div></div>
-    <div class="col-12"><div class="form-check"><input class="form-check-input" type="checkbox" id="agent-auto-confirm" name="auto_confirm" {{ 'checked' if agent and agent.mode == 'AUTO' else '' }}><label class="form-check-label" for="agent-auto-confirm">В AUTO разрешаю автоматические ответы и выбранные удаления</label></div></div>
+    <div class="col-12"><div class="form-check"><input class="form-check-input" type="checkbox" id="agent-auto-confirm" name="auto_confirm" {{ 'checked' if agent and agent.mode == 'AUTO' else '' }}><label class="form-check-label" for="agent-auto-confirm">В AUTO разрешаю автоматические ответы, выбранные удаления и баны</label></div></div>
   </div>
 </fieldset>
 <fieldset class="border-top mt-4 pt-3">
@@ -42,6 +42,7 @@
 <details class="border-top mt-4 pt-3">
   <summary class="fw-semibold">Пороги и ограничения</summary>
   <div class="row g-3 mt-1">
+    <div class="col-md-4"><label class="form-label" for="agent-ban-confidence">Уверенность для бана</label><input type="number" id="agent-ban-confidence" name="ban_confidence" class="form-control" min="0.95" max="1" step="0.01" value="{{ agent.ban_confidence if agent else 0.98 }}" required></div>
     {% for key, label in [('reply_confidence','Уверенность для ответа'),('moderation_confidence','Уверенность для удаления текста'),('vision_confidence','Уверенность для удаления изображения')] %}
     <div class="col-md-4"><label for="agent-{{ key }}" class="form-label">{{ label }}</label><input type="number" id="agent-{{ key }}" name="{{ key }}" class="form-control" min="0.5" max="1" step="0.01" value="{{ agent[key] if agent else defaults[key] }}" required></div>
     {% endfor %}
