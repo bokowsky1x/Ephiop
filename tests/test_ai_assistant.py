@@ -746,7 +746,7 @@ class AssistantTests(unittest.TestCase):
             for _ in range(2):
                 recovered = create_app()
                 with recovered.app_context():
-                    self.assertEqual([row.state for row in AIDecision.query.order_by(AIDecision.id)], ['UNCERTAIN', 'REVIEW'])
+                    self.assertEqual([row.state for row in AIDecision.query.order_by(AIDecision.id)], ['UNCERTAIN', 'QUEUED'])
                     self.assertIn('related_id', {row['name'] for row in inspect(db.engine).get_columns('ai_facts')})
                     self.assertEqual(AIAgent.query.one().fallback_language, 'AMHARIC')
                     db.session.remove()

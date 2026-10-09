@@ -15,20 +15,31 @@ EXPECTED_VALUES = dict(language=LANGUAGES, intent=INTENTS, classification=CLASSI
                        action=ACTIONS, policy_state=('READY', 'REVIEW', 'IGNORED'))
 
 
-def approved_examples(agent_id, exclude_id=None, message=None):
+def example_rows(agent_id, exclude_id=None):
     query = AIExample.query.filter_by(agent_id=agent_id, approved=True)
     if exclude_id is not None:
         query = query.filter(AIExample.id != exclude_id)
-    rows = query.order_by(AIExample.id.desc()).limit(50).all()
+    return query.order_by(AIExample.id.desc()).limit(50).all()
+
+
+def example_payload(rows):
+    return [dict(message=row.text[:800], reply_context=row.reply_context[:500], expected=row.expected,
+                 reply=row.corrected_reply[:500], moderator_guidance=row.guidance, has_image=bool(row.image)) for row in reversed(rows)]
+
+
+def word_rank(rows, message):
+    rows = list(rows)
     terms = set(re.findall(r'[^\W\d_]{2,}', (message or '').replace('[PRIVATE]', '').casefold()))
     if terms:
         def relevance(row):
             words = set(re.findall(r'[^\W\d_]{2,}', row.text.replace('[PRIVATE]', '').casefold()))
             return len(terms & words), row.id
         rows.sort(key=relevance, reverse=True)
-    rows = rows[:5]
-    return [dict(message=row.text[:800], reply_context=row.reply_context[:500], expected=row.expected,
-                 reply=row.corrected_reply[:500], moderator_guidance=row.guidance, has_image=bool(row.image)) for row in reversed(rows)]
+    return rows[:5]
+
+
+def approved_examples(agent_id, exclude_id=None, message=None):
+    return example_payload(word_rank(example_rows(agent_id, exclude_id), message))
 
 
 def validate_approval(example):
@@ -38,8 +49,10 @@ def validate_approval(example):
     if labels['intent'] in ('GAMBLING_INSTRUCTIONS', 'HOW_TO_REGISTER', 'UNKNOWN') and labels['action'] != 'HUMAN_REVIEW':
         raise ValueError('Эта тема требует проверки человеком')
     if labels['action'] == 'DELETE' and labels['classification'] not in ('PERSONAL_DATA', 'PAYMENT_DATA', 'IDENTITY_DOCUMENT', 'SCAM'):
+        if labels['classification'] == 'RULE_VIOLATION':
+            raise ValueError('Удаление за нарушение задаётся правилом во вкладке «Модерация»')
         raise ValueError('Безопасные сообщения не являются примером удаления')
-    if labels['action'] == 'BAN':
+    if labels['action'] in ('BAN', 'DELETE_BAN'):
         raise ValueError('Примеры банов добавляются в отдельной вкладке «Модерация»')
     if redact(example.corrected_reply, 801) != example.corrected_reply:
         raise ValueError('Удалите личные данные и контакты из исправленного ответа')
@@ -60,6 +73,7 @@ def invalidate_decisions(agent):
 
 
 def replay_snapshot(app, agent, example):
+    from ai_memory import memory_snapshot
     instructions, slang = analysis_resources(agent.language_profile)
     locale = locale_payload(agent)
     version = hashlib.sha256(json.dumps(dict(instructions=instructions, slang=slang, locale=locale),
@@ -75,12 +89,14 @@ def replay_snapshot(app, agent, example):
                    recent_messages=[], user_history=[], verified_facts=facts, now=datetime.utcnow().isoformat(),
                    **locale, moderation_rules=rules, approved_examples=approved_examples(agent.id, exclude_id=example.id, message=example.text))
     return dict(agent=agent_values, payload=payload, facts=facts, rules=rules, expected=dict(example.expected),
-                image=example.image, hint=hint, version=version)
+                image=example.image, hint=hint, version=version,
+                memory_rows=memory_snapshot(agent.id, exclude_id=example.id), exclude_id=example.id)
 
 
 async def evaluate_replay(app, run_id, created_at, snapshot):
     # This path intentionally has no Telegram client or live decision record.
     from ai_assistant import policy
+    from ai_memory import select_memory
     try:
         agent = SimpleNamespace(**snapshot['agent'])
         db.session.expire_all()
@@ -90,7 +106,13 @@ async def evaluate_replay(app, run_id, created_at, snapshot):
         if snapshot['image'] and not agent.vision:
             raise AnalysisError('Включите Vision для проверки тестового изображения')
         image = encoded_image(snapshot['image']) if snapshot['image'] else None
-        result = await analyze(app, snapshot['payload'], image)
+        selected = await select_memory(app, agent, snapshot['payload']['message'], exclude_id=snapshot['exclude_id'],
+                                       snapshot=snapshot['memory_rows'])
+        db.session.expire_all()
+        current = db.session.get(AIAgent, agent.id)
+        if not current or not current.consent or current.created_at != agent.created_at or current.revision != agent.revision:
+            raise AnalysisError('Настройки или разрешение передачи данных изменились. Тест отменён')
+        result = await analyze(app, {**snapshot['payload'], 'approved_examples': selected['examples']}, image)
         decision = SimpleNamespace(**result, has_image=bool(image))
         if decision.language in ('UNKNOWN', 'MIXED') or (image and not snapshot['hint']):
             decision.language = agent.fallback_language
@@ -100,6 +122,7 @@ async def evaluate_replay(app, run_id, created_at, snapshot):
                        reason=redact(decision.reason, 500), policy_reason=reason,
                        mode=agent.mode, would_execute=agent.mode == 'AUTO' and policy_state == 'READY',
                        telegram_checked=False)
+        outcome.update(memory_method=selected['method'], memory_example_ids=selected['ids'])
         mismatches = {key: dict(expected=value, actual=outcome[key]) for key, value in snapshot['expected'].items()
                       if value != outcome[key]}
         outcome['mismatches'] = mismatches

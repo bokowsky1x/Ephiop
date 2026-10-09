@@ -2,10 +2,12 @@ import asyncio
 from datetime import datetime, timedelta
 
 from telethon import errors
+from sqlalchemy.orm import load_only
 
 from ai_engine import AnalysisError, analysis_resources
-from models import AIDecision, AIModerationRule
+from models import AIDecision, AIExample, AIModerationRule
 from ai_locales import LANGUAGE_LABELS, NOTICE_LANGUAGES
+from ai_queue import queue_status
 
 
 def check_row(key, title, state, detail):
@@ -56,13 +58,13 @@ def checks(app, agent, telegram=None):
         detail += f'. Пороги: текст {agent.moderation_confidence:.2f}, изображение {agent.vision_confidence:.2f}'
     rows.append(check_row('deletion', 'Удаление сообщений', 'ok' if agent.allow_delete and agent.mode == 'AUTO' else 'warning', detail))
     rows.append(check_row('ban', 'Блокировка участников', 'warning',
-        f'Разрешена; порог {agent.ban_confidence:.2f}. Нужны включённое правило BAN, право Telegram и проверка автора. '
+        f'Разрешена; порог {agent.ban_confidence:.2f}. Нужны включённое правило BAN или DELETE_BAN, право Telegram и проверка автора. '
         + ('Автоматически в AUTO.' if agent.mode == 'AUTO' else 'Автоматически не выполняется в этом режиме.')
         if agent.allow_ban else 'Выключена. Примеры правил не включают бан сами по себе'))
     enabled_rules = AIModerationRule.query.filter_by(agent_id=agent.id, enabled=True).all()
     rows.append(check_row('rules', 'Правила сообщества', 'ok' if enabled_rules else 'warning',
-        f"Включено {len(enabled_rules)}: удаление {sum(rule.action == 'DELETE' for rule in enabled_rules)}, "
-        f"бан {sum(rule.action == 'BAN' for rule in enabled_rules)}. Разрешения и права проверяются отдельно."))
+        f"Включено {len(enabled_rules)}: удаление {sum(rule.action in ('DELETE', 'DELETE_BAN') for rule in enabled_rules)}, "
+        f"бан {sum(rule.action in ('BAN', 'DELETE_BAN') for rule in enabled_rules)}. Разрешения и права проверяются отдельно."))
     fresh = bool(telegram and telegram.get('revision') == agent.revision and
                  telegram.get('account_id') == agent.account_id and
                  telegram.get('created_at') == agent.created_at.isoformat() and
@@ -73,6 +75,20 @@ def checks(app, agent, telegram=None):
         rows.append(check_row('membership', 'Чат и права Telegram', 'warning', 'Не проверены. Запустите проверку Telegram'))
     if agent.last_error:
         rows.append(check_row('last_error', 'Последний сбой', 'error', agent.last_error))
+    from ai_memory import MODEL, cached, memory_text
+    examples = AIExample.query.filter_by(agent_id=agent.id, approved=True).options(
+        load_only(AIExample.text, AIExample.embedding, AIExample.embedding_hash)).all()
+    indexed = sum(cached(row, memory_text(row.text)) is not None for row in examples)
+    memory_ready = agent.semantic_memory and agent.consent and app.config.get('OPENAI_API_KEY')
+    rows.append(check_row('memory', 'Память пояснений', 'warning' if agent.memory_error or not memory_ready else 'ok',
+        (f'Поиск по смыслу: {MODEL}; в кеше {indexed}/{len(examples)} подтверждённых примеров. Дополнительные платные текстовые запросы.'
+         if agent.semantic_memory else 'Поиск по словам; дополнительные запросы embeddings выключены.')
+        + (' Нужны API-ключ и разрешение передачи данных.' if agent.semantic_memory and not memory_ready else '')
+        + (' ' + agent.memory_error if agent.semantic_memory and agent.memory_error else '')))
+    queue = queue_status(agent.id)
+    rows.append(check_row('analysis_queue', 'Очередь анализа', 'warning' if queue['waiting'] else 'ok',
+        f"Ожидают: {queue['waiting']}; анализируются: {queue['analyzing']}; повтор после сбоя: {queue['retrying']}. "
+        + (f"Ближайшая проверка не раньше {queue['next_at'].strftime('%H:%M:%S')} UTC." if queue['next_at'] else '')))
     latest = AIDecision.query.filter_by(agent_id=agent.id).order_by(AIDecision.id.desc()).first()
     return dict(rows=rows, status='error' if any(row['state'] == 'error' for row in rows) else 'warning',
                 checked_at=telegram['at'] if fresh else None, latest=latest)

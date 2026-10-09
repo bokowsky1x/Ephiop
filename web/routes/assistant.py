@@ -14,7 +14,7 @@ from web.routes.profile import run
 
 assistant_bp = Blueprint('assistant', __name__)
 MODES = ('OFF', 'OBSERVE', 'ASSIST', 'AUTO')
-FLAGS = ('consent', 'community_replies', 'support_router', 'information', 'vision', 'scam_detection', 'allow_delete', 'allow_ban')
+FLAGS = ('consent', 'community_replies', 'support_router', 'information', 'vision', 'scam_detection', 'allow_delete', 'allow_ban', 'semantic_memory')
 DELETE_FLAGS = ('delete_personal_data', 'delete_payment_data', 'delete_identity_documents')
 
 
@@ -100,6 +100,8 @@ def settings(agent):
         raise ValueError('Подтвердите автоматические действия для режима AUTO')
     if mode != 'OFF' and (not flags['consent'] or not current_app.config.get('OPENAI_API_KEY')):
         raise ValueError('Для анализа нужны OPENAI_API_KEY и разрешение передачи данных в OpenAI')
+    if flags['semantic_memory'] and (not flags['consent'] or not current_app.config.get('OPENAI_API_KEY')):
+        raise ValueError('Для смысловой памяти нужны OPENAI_API_KEY и разрешение передачи данных в OpenAI')
     numbers = {}
     ban_confidence = float(data.get('ban_confidence', agent.ban_confidence or 0.98))
     if not math.isfinite(ban_confidence) or not 0.95 <= ban_confidence <= 1:
@@ -129,6 +131,7 @@ def settings(agent):
         setattr(agent, key, value)
     for key, value in {**flags, **numbers, 'fact_max_age_hours': age}.items():
         setattr(agent, key, value)
+    agent.memory_error, agent.memory_retry_at = '', None
     agent.revision = (agent.revision or 0) + 1
 
 
@@ -163,13 +166,15 @@ def edit(agent_id):
         except Exception as exc:
             fail(exc)
     tab = request.args.get('tab', 'journal')
-    if tab not in ('journal', 'review', 'knowledge', 'deleted', 'scam', 'examples', 'training', 'moderation'):
+    if tab not in ('journal', 'review', 'knowledge', 'deleted', 'scam', 'examples', 'training', 'moderation', 'queue'):
         tab = 'journal'
     query = AIDecision.query.filter_by(agent_id=agent.id)
     if tab == 'review':
         query = query.filter_by(state='REVIEW')
+    if tab == 'queue':
+        query = query.filter(AIDecision.state.in_(('QUEUED', 'ANALYZING')))
     elif tab == 'deleted':
-        query = query.filter_by(state='DELETED')
+        query = query.filter(AIDecision.state.in_(('DELETED', 'DELETED_BANNED')))
     elif tab == 'scam':
         query = query.filter(AIDecision.intent.in_(('SCAM', 'FAKE_AGENT', 'FAKE_SUPPORT')))
     stats = db.session.query(AIDecision.intent, db.func.count(AIDecision.id)).filter_by(agent_id=agent.id).group_by(AIDecision.intent).all()
@@ -179,7 +184,7 @@ def edit(agent_id):
         **(example_context(agent) if tab == 'examples' else {}),
         **(training_context(agent, tab) if tab in ('training', 'moderation') else {}),
         training_count=AIDecision.query.filter_by(agent_id=agent.id, training_needed=True, training_status='OPEN').filter(
-            ~AIDecision.state.in_(('RUNNING', 'SENT', 'DELETED', 'BANNED', 'UNCERTAIN'))).count(),
+            ~AIDecision.state.in_(('QUEUED', 'ANALYZING', 'RUNNING', 'SENT', 'DELETED', 'BANNED', 'DELETED_BANNED', 'PARTIAL', 'UNCERTAIN'))).count(),
         accounts=Account.query.filter_by(status='authorized').all(),
         decisions=query.order_by(AIDecision.id.desc()).limit(100).all(),
         facts=AIFact.query.filter_by(agent_id=agent.id).order_by(AIFact.id.desc()).limit(100).all(),
@@ -296,7 +301,7 @@ def review(decision_id):
             AIDecision.query.filter_by(id=decision.id).filter(AIDecision.state.in_(('REVIEW', 'OBSERVED', 'READY'))).update(
                 {'state': 'DISMISSED', 'result': 'Отклонено модератором'}, synchronize_session='fetch')
             db.session.commit()
-        elif action in ('REPLY', 'DELETE', 'BAN'):
+        elif action in ('REPLY', 'DELETE', 'BAN', 'DELETE_BAN'):
             if request.form.get('confirm') != 'on':
                 raise ValueError('Подтвердите действие в Telegram')
             manager = current_app.telegram_manager
@@ -305,7 +310,7 @@ def review(decision_id):
             # Release the route's snapshot before the Telegram loop writes the decision.
             db.session.commit()
             state = run(manager.assistant().execute(decision.id, action, created_at=created_at), timeout=65)
-            flash('Результат: ' + state, 'success' if state in ('SENT', 'DELETED', 'BANNED') else 'warning')
+            flash('Результат: ' + state, 'success' if state in ('SENT', 'DELETED', 'BANNED', 'DELETED_BANNED') else 'warning')
         else:
             raise ValueError('Неизвестное действие')
     except Exception as exc:

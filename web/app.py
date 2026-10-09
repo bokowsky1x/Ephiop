@@ -21,7 +21,6 @@ def create_app(telegram_manager=None):
         db.create_all()
         from models import AIDecision, AIExample, AIReplayRun
         AIDecision.query.filter_by(state='RUNNING').update({'state': 'UNCERTAIN', 'result': 'Процесс прерван. Проверьте Telegram; автоматического повтора нет'})
-        AIDecision.query.filter_by(state='ANALYZING').update({'state': 'REVIEW', 'result': 'Анализ прерван. Требуется ручная проверка'})
         AIReplayRun.query.filter_by(state='RUNNING').update({'state': 'ERROR', 'result': 'Тест прерван перезапуском. Автоматического повтора нет'})
         AIExample.query.filter_by(running=True).update({'running': False})
         from sqlalchemy import inspect, text
@@ -34,6 +33,8 @@ def create_app(telegram_manager=None):
             if name not in agent_columns:
                 db.session.execute(text(f'ALTER TABLE ai_agents ADD COLUMN {name} BOOLEAN NOT NULL DEFAULT 1'))
         for name, definition in {
+            'semantic_memory': 'BOOLEAN NOT NULL DEFAULT 0',
+            'memory_error': "TEXT NOT NULL DEFAULT ''", 'memory_retry_at': 'DATETIME',
             'allow_ban': 'BOOLEAN NOT NULL DEFAULT 0',
             'ban_confidence': 'FLOAT NOT NULL DEFAULT 0.98',
             'language_profile': "VARCHAR(20) NOT NULL DEFAULT 'ethiopia'",
@@ -50,13 +51,26 @@ def create_app(telegram_manager=None):
         for name, definition in {
             'rule_ids': "TEXT NOT NULL DEFAULT '[]'", 'training_needed': 'BOOLEAN NOT NULL DEFAULT 0',
             'training_status': "VARCHAR(20) NOT NULL DEFAULT 'OPEN'",
+            'analysis_attempts': 'INTEGER NOT NULL DEFAULT 0',
+            'next_analysis_at': 'DATETIME', 'analysis_started_at': 'DATETIME',
+            'has_reply': 'BOOLEAN NOT NULL DEFAULT 1',
+            'embedding': 'JSON', 'embedding_hash': "VARCHAR(64) DEFAULT ''",
+            'memory_method': "VARCHAR(20) NOT NULL DEFAULT 'words'",
+            'memory_example_ids': "JSON NOT NULL DEFAULT '[]'",
+            'ban_status': "VARCHAR(20) NOT NULL DEFAULT ''", 'delete_status': "VARCHAR(20) NOT NULL DEFAULT ''",
         }.items():
             if name not in decision_columns:
                 db.session.execute(text(f'ALTER TABLE ai_decisions ADD COLUMN {name} {definition}'))
         if 'training_needed' not in decision_columns:
             db.session.execute(text("UPDATE ai_decisions SET training_needed = 1 WHERE state = 'REVIEW' AND confidence > 0"))
+        AIDecision.query.filter_by(state='UNCERTAIN', action='DELETE_BAN', ban_status='RUNNING').update({'ban_status': 'UNCERTAIN'})
+        AIDecision.query.filter_by(state='UNCERTAIN', action='DELETE_BAN', delete_status='RUNNING').update({'delete_status': 'UNCERTAIN'})
+        AIDecision.query.filter_by(state='UNCERTAIN', action='DELETE_BAN', delete_status='PENDING').update({'delete_status': 'SKIPPED'})
+        from ai_queue import recover_analysis
+        recover_analysis()
         example_columns = {column['name'] for column in inspect(db.engine).get_columns('ai_examples')}
-        for name, definition in {'guidance': "TEXT NOT NULL DEFAULT ''", 'kind': "VARCHAR(20) NOT NULL DEFAULT 'test'"}.items():
+        for name, definition in {'guidance': "TEXT NOT NULL DEFAULT ''", 'kind': "VARCHAR(20) NOT NULL DEFAULT 'test'",
+                                 'embedding': 'JSON', 'embedding_hash': "VARCHAR(64) DEFAULT ''"}.items():
             if name not in example_columns:
                 db.session.execute(text(f'ALTER TABLE ai_examples ADD COLUMN {name} {definition}'))
         task_columns = {column['name'] for column in inspect(db.engine).get_columns('scheduled_tasks')}

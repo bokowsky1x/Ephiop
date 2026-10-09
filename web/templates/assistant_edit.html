@@ -27,7 +27,7 @@
   </form>
 </details>
 <ul class="nav nav-tabs mb-4">
-  {% for key, label in [('journal','Журнал'),('review','Проверка'),('training','Тренировка'),('moderation','Модерация'),('knowledge','Источники'),('examples','Тесты и исправления'),('deleted','Удаления'),('scam','Мошенничество')] %}<li class="nav-item"><a class="nav-link {{ 'active' if tab == key else '' }}" href="{{ url_for('assistant.edit', agent_id=agent.id, tab=key) }}">{{ label }}{% if key == 'training' and training_count %} <span class="badge bg-warning text-dark">{{ training_count }}</span>{% endif %}</a></li>{% endfor %}
+  {% for key, label in [('journal','Журнал'),('queue','Очередь анализа'),('review','Проверка'),('training','Тренировка'),('moderation','Модерация'),('knowledge','Источники'),('examples','Тесты и исправления'),('deleted','Удаления'),('scam','Мошенничество')] %}<li class="nav-item"><a class="nav-link {{ 'active' if tab == key else '' }}" href="{{ url_for('assistant.edit', agent_id=agent.id, tab=key) }}">{{ label }}{% if key == 'training' and training_count %} <span class="badge bg-warning text-dark">{{ training_count }}</span>{% endif %}</a></li>{% endfor %}
 </ul>
 {% if tab == 'training' %}
 {% include '_assistant_training.html' %}
@@ -78,15 +78,18 @@
   </form>
 </details>
 {% else %}
-<div class="d-flex gap-2 flex-wrap mb-4">{% for intent, count in stats %}<span class="small border rounded px-2 py-1">{{ intent }}: {{ count }}</span>{% endfor %}</div>
+{% if tab != 'queue' %}<div class="d-flex gap-2 flex-wrap mb-4">{% for intent, count in stats %}<span class="small border rounded px-2 py-1">{{ intent }}: {{ count }}</span>{% endfor %}</div>{% endif %}
 {% for decision in decisions %}
 <section class="border-bottom pb-3 mb-3">
-  <div class="d-flex gap-2 align-items-center flex-wrap mb-2"><span class="fw-semibold">{{ decision.intent }}</span><span class="badge bg-{{ 'success' if decision.state in ['SENT','DELETED','BANNED'] else 'warning text-dark' if decision.state in ['REVIEW','UNCERTAIN'] else 'secondary' }}">{{ decision.state }}</span><span class="small text-muted">{{ decision.language }} · {{ '%.2f'|format(decision.confidence) }} · {{ decision.action }}</span></div>
+  <div class="d-flex gap-2 align-items-center flex-wrap mb-2"><span class="fw-semibold">{{ 'Ожидает анализа' if decision.state == 'QUEUED' else 'Идёт анализ' if decision.state == 'ANALYZING' else decision.intent }}</span><span class="badge bg-{{ 'success' if decision.state in ['SENT','DELETED','BANNED','DELETED_BANNED'] else 'warning text-dark' if decision.state in ['REVIEW','UNCERTAIN','PARTIAL'] else 'secondary' }}">{{ 'В очереди' if decision.state == 'QUEUED' else 'Анализ' if decision.state == 'ANALYZING' else 'Удалено + бан' if decision.state == 'DELETED_BANNED' else 'Частично' if decision.state == 'PARTIAL' else decision.state }}</span>{% if decision.state not in ['QUEUED','ANALYZING'] %}<span class="small text-muted text-break">{{ decision.language }} · {{ '%.2f'|format(decision.confidence) }} · {{ 'Удаление и бан' if decision.action == 'DELETE_BAN' else decision.action }}</span>{% endif %}</div>
   <div class="small text-muted mb-2">{{ decision.created_at.strftime('%d.%m.%Y %H:%M') }} UTC · #{{ decision.message_id }} · {{ decision.model }}</div>
+  {% if decision.memory_example_ids %}<div class="small text-muted text-break mb-2">Пояснения: {{ 'по смыслу' if decision.memory_method == 'semantic' else 'по словам' }} · {% for example_id in decision.memory_example_ids %}#{{ example_id }}{{ ', ' if not loop.last else '' }}{% endfor %}</div>{% endif %}
   {% if agent.chat_id.startswith('-100') %}<a class="small" href="https://t.me/c/{{ agent.chat_id[4:] }}/{{ decision.message_id }}" target="_blank" rel="noopener noreferrer">Сообщение в Telegram</a>{% endif %}
   <div class="small text-break mt-2">{{ decision.reason }}{% if decision.reason %} · {% endif %}{{ decision.result }}</div>
+  {% if decision.ban_status or decision.delete_status %}{% set operation_names = {'PENDING':'Ожидает','RUNNING':'Выполняется','DONE':'Подтверждено','ERROR':'Отказ Telegram','UNCERTAIN':'Не подтверждено','SKIPPED':'Не запускалось'} %}<div class="small d-flex gap-3 flex-wrap mt-2"><span>Бан: {{ operation_names.get(decision.ban_status, 'Не запускалось') }}</span><span>Удаление: {{ operation_names.get(decision.delete_status, 'Не запускалось') }}</span></div>{% endif %}
+  {% if decision.state in ['QUEUED','ANALYZING'] %}<div class="small text-muted mt-2">Попыток анализа: {{ decision.analysis_attempts }} / 3{% if decision.next_analysis_at %} · Следующая проверка не раньше {{ decision.next_analysis_at.strftime('%d.%m.%Y %H:%M:%S') }} UTC{% endif %}</div>{% endif %}
   {% if decision.reply %}<p class="text-break mt-2 mb-2" style="white-space:pre-wrap">{{ decision.reply }}</p>{% endif %}
-  <a class="btn btn-sm btn-outline-secondary mt-2" href="{{ url_for('assistant.edit', agent_id=agent.id, tab='examples', correct=decision.id) }}"><i class="bi bi-pencil me-1"></i>Добавить исправление</a>
+  {% if decision.state not in ['QUEUED','ANALYZING'] %}<a class="btn btn-sm btn-outline-secondary mt-2" href="{{ url_for('assistant.edit', agent_id=agent.id, tab='examples', correct=decision.id) }}"><i class="bi bi-pencil me-1"></i>Добавить исправление</a>{% endif %}
   {% if decision.state == 'REVIEW' %}
   <form method="post" action="{{ url_for('assistant.review', decision_id=decision.id) }}" class="mt-3">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -96,6 +99,7 @@
       {% if agent.mode in ['ASSIST','AUTO'] and decision.reply and decision.action in ['REPLY','WARN'] %}<button class="btn btn-sm btn-primary" name="action" value="REPLY"><i class="bi bi-send me-1"></i>Отправить ответ</button>{% endif %}
       {% if agent.mode in ['ASSIST','AUTO'] and agent.allow_delete %}<button class="btn btn-sm btn-outline-danger" name="action" value="DELETE"><i class="bi bi-trash me-1"></i>Удалить сообщение</button>{% endif %}
       {% if agent.mode in ['ASSIST','AUTO'] and agent.allow_ban and decision.action == 'BAN' %}<button class="btn btn-sm btn-outline-danger" name="action" value="BAN"><i class="bi bi-person-slash me-1"></i>Забанить автора</button>{% endif %}
+      {% if agent.mode in ['ASSIST','AUTO'] and agent.allow_ban and agent.allow_delete and decision.action == 'DELETE_BAN' %}<button class="btn btn-sm btn-outline-danger" name="action" value="DELETE_BAN"><i class="bi bi-person-slash me-1"></i>Удалить и заблокировать</button>{% endif %}
       <button class="btn btn-sm btn-outline-secondary" name="action" value="dismiss"><i class="bi bi-x me-1"></i>Отклонить</button>
     </div>
   </form>

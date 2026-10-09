@@ -80,6 +80,10 @@ class TelegramManager:
         await self._load_accounts()
         await self._reload_scheduled_tasks()
         self._refresh_trigger_modes()
+        self.scheduler.add_job(
+            self.assistant().process_queue, 'interval', seconds=5,
+            id='process_ai_analysis_queue', max_instances=1, coalesce=True,
+        )
 
         # 每分钟重新加载Задача по расписанию（捕获 Web 端新增的任务）
         self.scheduler.add_job(
